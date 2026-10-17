@@ -85,6 +85,8 @@ jobs:
       - name: Test and package (Linux)
         if: runner.os == 'Linux'
         run: |
+          # The release build keeps debug information (-g3); strip it from the shipped binary.
+          strip build/cubiomes-viewer
           ./build/cubiomes-viewer --version
           mkdir -p dist/cubiomes-viewer
           cp build/cubiomes-viewer LICENSE dist/cubiomes-viewer/
