@@ -28,4 +28,4 @@ done
     git apply --ignore-whitespace --whitespace=nowarn -p2 "$PATCHES/$p.patch"
     echo "applied $p (backend)"
 done)
-echo "Done. Now build: qmake CONFIG+=release && mingw32-make"
+echo "Done. Now build with: qmake CONFIG+=release && make   (mingw32-make on Windows)"
