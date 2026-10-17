@@ -96,6 +96,7 @@ jobs:
       # MSYS2 provides the MinGW compiler and Qt 6 together.
       - name: Set up MSYS2 with Qt 6 (Windows)
         if: runner.os == 'Windows'
+        id: msys
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -107,7 +108,7 @@ jobs:
             mingw-w64-x86_64-qt6-tools
             zip
 
-      - name: Build (Windows)
+      - name: Prepare the project (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
@@ -115,12 +116,21 @@ jobs:
           # work against the shared Qt of MSYS2. Qt and the MinGW runtime are bundled
           # as DLLs by windeployqt instead.
           sed -i 's/^\( *\)CONFIG += static_gnu/\1# CONFIG += static_gnu/' cubiomes-viewer/cubiomes-viewer.pro
-          set -o pipefail
-          mkdir -p build && cd build
-          # The generated makefiles use cmd.exe syntax, but make would pick the MSYS2
-          # sh, so cmd.exe has to be requested.
-          { qmake6 CONFIG+=release ../cubiomes-viewer/cubiomes-viewer.pro
-            mingw32-make -j"$(nproc)" SHELL=cmd.exe; } 2>&1 | tee build.log
+
+      # The project's makefiles are written for cmd.exe. qmake and make fall back to
+      # sh syntax when an sh is on the PATH, so the build runs from PowerShell with a
+      # PATH that only has the MinGW tools.
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = "${{ steps.msys.outputs.msys2-location }}\mingw64\bin;C:\Windows\System32;C:\Windows"
+          New-Item -ItemType Directory -Force build | Out-Null
+          Set-Location build
+          qmake6 CONFIG+=release ../cubiomes-viewer/cubiomes-viewer.pro 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          mingw32-make -j $env:NUMBER_OF_PROCESSORS 2>&1 | Tee-Object -FilePath build.log -Append
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test and package (Windows)
         if: runner.os == 'Windows'
@@ -150,7 +160,9 @@ jobs:
           mkdir build && cd build
           # Qt 6.7.3's qyieldcpu.h uses __yield() without declaring it, which newer
           # clang rejects. arm_acle.h declares it.
+          # Qt 6.7.3 still links Apple's removed AGL framework, which nothing here uses.
           { qmake CONFIG+=release ../cubiomes-viewer/cubiomes-viewer.pro -after "QMAKE_CXXFLAGS+=-include arm_acle.h"
+            sed -i '' 's/-framework AGL//g' Makefile
             CFLAGS="-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk" make -j"$(sysctl -n hw.ncpu)"; } 2>&1 | tee build.log
 
       - name: Test and package (macOS)
