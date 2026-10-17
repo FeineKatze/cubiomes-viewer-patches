@@ -77,9 +77,10 @@ jobs:
       - name: Build (Linux)
         if: runner.os == 'Linux'
         run: |
+          set -o pipefail
           mkdir build && cd build
-          qmake6 CONFIG+=release ../cubiomes-viewer/cubiomes-viewer.pro
-          make -j"$(nproc)"
+          { qmake6 CONFIG+=release ../cubiomes-viewer/cubiomes-viewer.pro
+            make -j"$(nproc)"; } 2>&1 | tee build.log
 
       - name: Test and package (Linux)
         if: runner.os == 'Linux'
@@ -114,9 +115,10 @@ jobs:
           # work against the shared Qt of MSYS2. Qt and the MinGW runtime are bundled
           # as DLLs by windeployqt instead.
           sed -i 's/^\( *\)CONFIG += static_gnu/\1# CONFIG += static_gnu/' cubiomes-viewer/cubiomes-viewer.pro
+          set -o pipefail
           mkdir -p build && cd build
-          qmake6 CONFIG+=release ../cubiomes-viewer/cubiomes-viewer.pro
-          mingw32-make -j"$(nproc)"
+          { qmake6 CONFIG+=release ../cubiomes-viewer/cubiomes-viewer.pro
+            mingw32-make -j"$(nproc)"; } 2>&1 | tee build.log
 
       - name: Test and package (Windows)
         if: runner.os == 'Windows'
@@ -142,9 +144,10 @@ jobs:
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: |
+          set -o pipefail
           mkdir build && cd build
-          qmake CONFIG+=release ../cubiomes-viewer/cubiomes-viewer.pro
-          CFLAGS="-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk" make -j"$(sysctl -n hw.ncpu)"
+          { qmake CONFIG+=release ../cubiomes-viewer/cubiomes-viewer.pro
+            CFLAGS="-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk" make -j"$(sysctl -n hw.ncpu)"; } 2>&1 | tee build.log
 
       - name: Test and package (macOS)
         if: runner.os == 'macOS'
@@ -156,14 +159,18 @@ jobs:
           mv cubiomes-viewer.dmg "../dist/cubiomes-viewer-${VERSION}-${{ matrix.name }}.dmg"
 
       # ------------------------------------------------------------ Debugging
-      # Disabled for now. To get compiler errors as annotations that can be read through
-      # the GitHub API (full logs are not reachable from the sandbox), make the build
-      # steps above write their output to a file, for example
-      #     make -j"$(nproc)" 2>&1 | tee build.log
-      # (add `set -o pipefail` before it), then enable this step.
-      # - name: Annotate build errors
-      #   if: failure()
-      #   run: grep -E "error:|Error " build/build.log | head -20 | while read -r line; do echo "::error::$line"; done
+      # Prints the first compiler/linker problems as one annotation, which can be read
+      # through the GitHub API when the full log is not reachable. The build steps
+      # above write their output to build/build.log. Remove this step once the
+      # builds are stable.
+      - name: Annotate build errors
+        if: failure()
+        run: |
+          f=build/build.log
+          [ -f "$f" ] || { echo "::error::no build log was written"; exit 0; }
+          msg=$(grep -n -i -E 'error|fatal|undefined reference|no such file|not found|cannot|\*\*\*' "$f" | head -14 | cut -c1-260)
+          msg="${msg//$'\n'/%0A}"
+          echo "::error title=Build log::$msg"
 
       - uses: actions/upload-artifact@v7
         with:
