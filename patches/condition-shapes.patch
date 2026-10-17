@@ -1,0 +1,258 @@
+--- a/src/formconditions.h
++++ b/src/formconditions.h
+@@ -35,6 +35,8 @@
+     ~FormConditions();
+ 
+     std::vector<Condition> getConditions() const;
++    // conditions ticked in the list, whose area is drawn on the map
++    std::vector<Condition> getMapConditions() const;
+     void updateSensitivity();
+     int getIndex(int idx) const;
+ 
+@@ -47,6 +49,7 @@
+ signals:
+     void changed();
+     void selectionUpdate(const std::vector<Condition>& selected);
++    void mapShapesChanged();
+ 
+ public slots:
+     void on_buttonRemoveAll_clicked();
+@@ -58,6 +61,7 @@
+     void on_listConditions_customContextMenuRequested(const QPoint &pos);
+     void on_listConditions_itemDoubleClicked(QListWidgetItem *item);
+     void on_listConditions_itemSelectionChanged();
++    void on_listConditions_itemChanged(QListWidgetItem *item);
+ 
+     void conditionsAdd();
+     void conditionsEdit();
+@@ -65,6 +69,7 @@
+     void conditionsCopy();
+     int conditionsPaste(bool countonly = false);
+     void conditionsDelete();
++    void conditionsToggleMap();
+ 
+     void addItemCondition(QListWidgetItem *item, Condition cond, int modified = 1);
+ 
+--- a/src/formconditions.cpp
++++ b/src/formconditions.cpp
+@@ -49,6 +49,8 @@
+         if (i == n-1 || opt.rect.right() > rect.right())
+             opt.rect.setRight(rect.right());
+         opt.text = txts[i];
++        if (i > 0)
++            opt.features &= ~QStyleOptionViewItem::HasCheckIndicator;
+         style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
+         opt.rect.adjust(tabwidth, 0, tabwidth, 0);
+         if (opt.rect.left() >= rect.right())
+@@ -101,6 +103,19 @@
+     return conds;
+ }
+ 
++std::vector<Condition> FormConditions::getMapConditions() const
++{
++    std::vector<Condition> conds;
++
++    for (int i = 0, ie = ui->listConditions->count(); i < ie; i++)
++    {
++        const QListWidgetItem *item = ui->listConditions->item(i);
++        if (item->checkState() == Qt::Checked)
++            conds.push_back(qvariant_cast<Condition>(item->data(Qt::UserRole)));
++    }
++    return conds;
++}
++
+ void FormConditions::updateSensitivity()
+ {
+     if (!parent)
+@@ -211,6 +226,11 @@
+         item->setBackground(QColor(255, 255, 0, 80));
+ 
+     item->setText(s);
++    if (parent && item->data(Qt::CheckStateRole).isNull())
++    {   // tick to draw the area of the condition on the map (not saved)
++        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
++        item->setCheckState(Qt::Unchecked);
++    }
+     item->setData(Qt::UserRole, QVariant::fromValue(*cond));
+ }
+ 
+@@ -325,6 +345,16 @@
+             tr("Remove %n condition(s)", "", n), this,
+             &FormConditions::conditionsDelete, QKeySequence::Delete);
+         actdel->setEnabled(n > 0);
++
++        menu->addSeparator();
++        bool allshown = n > 0;
++        for (const QListWidgetItem *it : ui->listConditions->selectedItems())
++            allshown &= it->checkState() == Qt::Checked;
++        QAction *actmap = menu->addAction(QIcon(),
++            allshown ? tr("Hide %n condition(s) from the map", "", n)
++                     : tr("Show %n condition(s) on the map", "", n),
++            this, &FormConditions::conditionsToggleMap);
++        actmap->setEnabled(n > 0);
+     }
+     else
+     {
+@@ -349,6 +379,21 @@
+     updateSensitivity();
+ }
+ 
++void FormConditions::on_listConditions_itemChanged(QListWidgetItem *)
++{
++    emit mapShapesChanged();
++}
++
++void FormConditions::conditionsToggleMap()
++{
++    const QList<QListWidgetItem*> selected = ui->listConditions->selectedItems();
++    bool allshown = !selected.isEmpty();
++    for (const QListWidgetItem *item : selected)
++        allshown &= item->checkState() == Qt::Checked;
++    for (QListWidgetItem *item : selected)
++        item->setCheckState(allshown ? Qt::Unchecked : Qt::Checked);
++}
++
+ void FormConditions::conditionsAdd()
+ {
+     if (!parent)
+--- a/src/mainwindow.h
++++ b/src/mainwindow.h
+@@ -118,6 +118,7 @@
+     void onActionBiomeLayerSelect(int lopt, int disp = -1);
+     void onConditionsChanged();
+     void onConditionsSelect(const std::vector<Condition>& selection);
++    void updateConditionShapes();
+     void onGen48Changed();
+     void onSelectedSeedChanged(uint64_t seed);
+     void onSearchStatusChanged(bool running);
+@@ -133,6 +134,7 @@
+     MapView *mapView;
+ 
+     FormConditions *formCond;
++    std::vector<Condition> condSelection; // conditions currently selected in the list
+     FormGen48 *formGen48;
+     FormSearchControl *formControl;
+     LayerOpt lopt;
+--- a/src/mainwindow.cpp
++++ b/src/mainwindow.cpp
+@@ -215,6 +215,7 @@
+     ui->collapseConstraints->init(tr("Conditions"), formCond, false);
+     connect(formCond, &FormConditions::changed, this, &MainWindow::onConditionsChanged);
+     connect(formCond, &FormConditions::selectionUpdate, this, &MainWindow::onConditionsSelect);
++    connect(formCond, &FormConditions::mapShapesChanged, this, &MainWindow::updateConditionShapes);
+     ui->collapseConstraints->setInfo(
+         tr("Help: Conditions"),
+         tr(
+@@ -438,6 +439,7 @@
+     ui->comboBoxMC->setCurrentText(mc2str(wi.mc));
+     ui->seedEdit->setText(QString::asprintf("%" PRId64, (int64_t)wi.seed));
+     getMapView()->setSeed(wi, dim, lopt);
++    updateConditionShapes();
+ 
+     ui->comboBoxMC->setEnabled(true);
+     ui->checkLarge->setEnabled(wi.mc >= MC_1_3);
+@@ -1141,32 +1143,99 @@
+ {
+     std::vector<Condition> conds = formCond->getConditions();
+     formGen48->updateAutoConditions(conds);
++    updateConditionShapes();
+ }
+ 
+ void MainWindow::onConditionsSelect(const std::vector<Condition>& selection)
+ {
++    condSelection = selection;
++    updateConditionShapes();
++}
++
++static Pos getSpawnPos(const WorldInfo& wi)
++{   // same generator settings as the map, so this is where the spawn icon is
++    static struct { bool valid; uint64_t seed; int mc, large; Pos p; } cache = {};
++    if (!cache.valid || cache.seed != wi.seed || cache.mc != wi.mc || cache.large != wi.large)
++    {
++        Generator g;
++        setupGenerator(&g, wi.mc, wi.large | FORCE_OCEAN_VARIANTS);
++        applySeed(&g, DIM_OVERWORLD, wi.seed);
++        cache.p = getSpawn(&g);
++        cache.seed = wi.seed;
++        cache.mc = wi.mc;
++        cache.large = wi.large;
++        cache.valid = true;
++    }
++    return cache.p;
++}
++
++// Draws the area of the conditions that are ticked in the list, and of the ones
++// that are selected, on the map. Areas are relative to the world origin or to
++// the spawn point; areas relative to other conditions are not drawn yet.
++void MainWindow::updateConditionShapes()
++{
++    const std::vector<Condition> all = formCond->getConditions();
++    std::vector<Condition> shown = formCond->getMapConditions();
++    shown.insert(shown.end(), condSelection.begin(), condSelection.end());
++
+     std::vector<Shape> shapes;
+-    for (const Condition& c : selection)
++    QSet<int> done;
++    bool havespawn = false;
++    Pos spawn = {0, 0};
++
++    for (const Condition& c : shown)
+     {
+         if (c.meta & Condition::DISABLED)
+             continue;
+-        if (c.relative)
++        if (done.contains(c.save))
+             continue;
+         const FilterInfo& ft = g_filterinfo.list[c.type];
++        // only conditions with an area: a rectangle or a radius
++        if (!(ft.loc & FilterInfo::LOC_2) && !((ft.loc & FilterInfo::LOC_R) && c.rmax))
++            continue;
++
++        Pos at = {0, 0};
++        if (c.relative)
++        {
++            const Condition *ref = nullptr;
++            for (const Condition& r : all)
++            {
++                if (r.save == c.relative)
++                {
++                    ref = &r;
++                    break;
++                }
++            }
++            if (!ref || (ref->meta & Condition::DISABLED))
++                continue;
++            if (ref->type != F_SPAWN || ref->relative)
++                continue; // not supported yet
++            if (ft.dim != DIM_OVERWORLD && ft.dim != DIM_UNDEF)
++                continue; // the spawn is an overworld position
++            if (!havespawn)
++            {
++                WorldInfo wi;
++                getSeed(&wi, false);
++                spawn = getSpawnPos(wi);
++                havespawn = true;
++            }
++            at = spawn;
++        }
++        done.insert(c.save);
+ 
+         Shape s;
+         s.dim = ft.dim;
+         if (c.rmax)
+         {
+             s.type = Shape::CIRCLE;
+-            s.p1 = s.p2 = Pos{0,0};
++            s.p1 = s.p2 = at;
+             s.r = c.rmax - 1;
+         }
+         else
+         {
+             s.type = Shape::RECT;
+-            s.p1 = Pos{c.x1, c.z1};
+-            s.p2 = Pos{c.x2+1, c.z2+1};
++            s.p1 = Pos{at.x + c.x1, at.z + c.z1};
++            s.p2 = Pos{at.x + c.x2 + 1, at.z + c.z2 + 1};
+             s.r = 0;
+         }
+         shapes.push_back(s);

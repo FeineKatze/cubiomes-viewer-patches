@@ -12,6 +12,7 @@ Tested base: viewer commit `169e8c5` ("fixed camp search condition wipes out all
 | SIMD biome noise (AVX2) | Evaluates the biome noise for 4 points at once. Used for area generation (the map), strongholds, monument checks and spawn. Roughly 1.7–2.2× faster area generation, 1.5× strongholds, about 1.4× more on spawn searches. Identical results; runtime CPU detection with a normal fallback. |
 | Radial area for exact biome conditions | "Overworld/Nether/End at scale" accept "Within radial distance" (a circle) as well as squares. Not available for the layer-based overworld of Minecraft 1.0–1.17. |
 | Include cells touching the edge | Option for the radial area. A cell counts if any block of it is inside the circle, not only its corner. On by default for new conditions; saved conditions keep the old rule. |
+| Show condition areas on the map | Each condition in the list has a tick box. Ticked conditions draw their area on the map (a circle for a radius, a rectangle otherwise), independent of selection. Areas relative to the world origin or to the spawn point are drawn, and they are hidden when you look at another dimension. Areas relative to other conditions are not drawn yet. The ticks are not saved with the session and everything starts unticked. Right-click a condition for "Show on the map". |
 | Structure distance | Click a structure or spawn, then Ctrl+click another one to see the line and distance between them. |
 | Map panning fix | Dragging no longer drops most of the mouse movement (it was sluggish with high-polling mice), and the map no longer glides on after you stop. |
 | Qt 6 dropdown fix | The "Sampling scale" dropdown was completely greyed out in Qt 6 builds. |
@@ -63,7 +64,7 @@ Linux builds need Qt 6 installed on your system. The Windows and macOS builds ha
 
 `apply.sh` applies these in this order. The viewer patches go on the viewer repository, and the backend patches go on the `cubiomes/` submodule.
 
-Viewer: `panning-fix`, `structure-distance`, `fast-spawn-toggle`, `simd-toggle`, `radial-biome-viewer`, `qt6-combo-fix`, `edge-cells-viewer`.
+Viewer: `panning-fix`, `structure-distance`, `fast-spawn-toggle`, `simd-toggle`, `radial-biome-viewer`, `qt6-combo-fix`, `edge-cells-viewer`, `condition-shapes`.
 Backend: `spawn-speedup`, `simd-noise`, `radial-biome-backend`, `edge-cells-backend`.
 
 ## How these were checked
