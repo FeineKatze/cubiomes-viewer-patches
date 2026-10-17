@@ -1,0 +1,83 @@
+diff --git a/src/mapview.cpp b/src/mapview.cpp
+index 3c0265c..3dfa8b9 100644
+--- a/src/mapview.cpp
++++ b/src/mapview.cpp
+@@ -43,6 +43,7 @@ MapView::MapView(QWidget *parent)
+     , blocks2pix(1.0/16)
+     , focusx(),focusz()
+     , prevx(),prevz()
++    , samplex(),samplez()
+     , velx(), velz()
+     , mtime()
+     , holding()
+@@ -599,10 +600,13 @@ void MapView::mousePressEvent(QMouseEvent *e)
+         holding = true;
+         prevx = focusx = getX();
+         prevz = focusz = getZ();
++        samplex = focusx;
++        samplez = focusz;
+         velx = 0;
+         velz = 0;
+         mtime = 0;
+         elapsed1.start();
++        lastmove.start();
+         frameelapsed.start();
+         if (e->modifiers() & Qt::ShiftModifier)
+         {
+@@ -624,17 +628,21 @@ void MapView::mouseMoveEvent(QMouseEvent *e)
+     if ((e->buttons() & Qt::LeftButton) && holding)
+     {
+         QPoint d = e->pos() - mprev;
++        // always apply the drag delta; only the velocity sampling is throttled
++        focusx = focusx - d.x() / blocks2pix;
++        focusz = focusz - d.y() / blocks2pix;
+         qreal dt = elapsed1.nsecsElapsed() * 1e-9;
+         if (dt > .005)
+         {
+             mtime = dt;
+-            prevx = focusx;
+-            prevz = focusz;
+-            focusx = focusx - d.x() / blocks2pix;
+-            focusz = focusz - d.y() / blocks2pix;
++            prevx = samplex;
++            prevz = samplez;
++            samplex = focusx;
++            samplez = focusz;
+             elapsed1.start();
+         }
+         mprev = e->pos();
++        lastmove.start();
+         update();//repaint();
+     }
+ }
+@@ -655,8 +663,8 @@ void MapView::mouseReleaseEvent(QMouseEvent *e)
+             frameelapsed.start();
+             update();
+         }
+-        if (!config.smoothMotion)
+-        {   // i.e. without inertia
++        if (!config.smoothMotion || lastmove.nsecsElapsed() > 60000000)
++        {   // i.e. without inertia, or the pointer rested before release
+             velx = velz = 0;
+         }
+ 
+diff --git a/src/mapview.h b/src/mapview.h
+index 4d789d1..da4f8e6 100644
+--- a/src/mapview.h
++++ b/src/mapview.h
+@@ -94,6 +94,7 @@ public:
+     QWorld *world;
+ 
+     QElapsedTimer elapsed1;
++    QElapsedTimer lastmove; // time since the last drag event
+     QElapsedTimer frameelapsed;
+     QElapsedTimer actelapsed;
+     qreal decay;
+@@ -104,6 +105,7 @@ private:
+     qreal blocks2pix;
+     qreal focusx, focusz;
+     qreal prevx, prevz;
++    qreal samplex, samplez; // focus at the last velocity sample
+     qreal velx, velz;
+     qreal mtime;
+ 

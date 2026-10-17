@@ -1,0 +1,55 @@
+--- a/src/search.h
++++ b/src/search.h
+@@ -281,7 +281,7 @@
+         };
+ 
+         list[F_BIOME] = FilterInfo{
+-            CAT_BIOMES, 1, LOC_REC, 0, 1, BR_NONE, MC_B1_7, MC_NEWEST, 0, 1, disp++,
++            CAT_BIOMES, 1, LOC_RAD, 0, 1, BR_NONE, MC_B1_7, MC_NEWEST, 0, 1, disp++,
+             "overworld",
+             QT_TRANSLATE_NOOP("Filter", "Overworld at scale"),
+             QT_TRANSLATE_NOOP("Filter",
+@@ -289,14 +289,14 @@
+             "discard those that have biomes that are explicitly excluded (-).")
+         };
+         list[F_BIOME_NETHER] = FilterInfo{
+-            CAT_BIOMES, 0, LOC_REC, 0, 1, BR_NONE, MC_1_16_1, MC_NEWEST, -1, 1, disp++,
++            CAT_BIOMES, 0, LOC_RAD, 0, 1, BR_NONE, MC_1_16_1, MC_NEWEST, -1, 1, disp++,
+             "nether",
+             QT_TRANSLATE_NOOP("Filter", "Nether at scale"),
+             QT_TRANSLATE_NOOP("Filter",
+             "Nether biomes sampled on a scaled grid.")
+         };
+         list[F_BIOME_END] = FilterInfo{
+-            CAT_BIOMES, 0, LOC_REC, 0, 1, BR_NONE, MC_1_9, MC_NEWEST, +1, 1, disp++,
++            CAT_BIOMES, 0, LOC_RAD, 0, 1, BR_NONE, MC_1_9, MC_NEWEST, +1, 1, disp++,
+             "the_end",
+             QT_TRANSLATE_NOOP("Filter", "End at scale"),
+             QT_TRANSLATE_NOOP("Filter",
+--- a/src/search.cpp
++++ b/src/search.cpp
+@@ -2136,8 +2136,8 @@
+             int h = rz2 - rz1 + 1;
+             int y = (s == 0 ? cond->y : cond->y >> 2);
+             Range r = {1<<s, rx1, rz1, w, h, y, 1};
+-            valid = checkForBiomes(&env->g, NULL, r, finfo.dim, env->seed,
+-                &cond->bf, (volatile char*)env->stop) > 0;
++            valid = checkForBiomesRadial(&env->g, NULL, r, finfo.dim, env->seed,
++                &cond->bf, (volatile char*)env->stop, at, rmax) > 0;
+         }
+         return valid ? COND_OK : COND_FAILED;
+ 
+--- a/src/conditiondialog.cpp
++++ b/src/conditiondialog.cpp
+@@ -514,6 +514,11 @@
+     ui->groupBoxPosition->setEnabled(filterindex != F_SELECT);
+ 
+     ui->checkRadius->setEnabled(ft.loc & FilterInfo::LOC_R);
++    if (filterindex == F_BIOME && wi.mc > MC_B1_7 && wi.mc <= MC_1_17)
++    {   // the layer based biome check of these versions only supports rectangles
++        ui->checkRadius->setEnabled(false);
++        ui->checkRadius->setChecked(false);
++    }
+ 
+     bool p1 = ft.loc & FilterInfo::LOC_1;
+     bool p2 = ft.loc & FilterInfo::LOC_2;

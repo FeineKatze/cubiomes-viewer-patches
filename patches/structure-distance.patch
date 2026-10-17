@@ -1,0 +1,209 @@
+--- a/src/mapview.cpp	2026-10-15 20:00:19.355225793 +0200
++++ b/src/mapview.cpp	2026-10-15 20:45:14.770930807 +0200
+@@ -50,6 +50,7 @@
+     , mstart(),mprev()
+     , bstart()
+     , measure()
++    , pressctrl()
+     , updatecounter()
+     , afkRangeEnabled()
+     , afkRangex()
+@@ -617,7 +618,9 @@
+ 
+         if (world)
+         {
+-            world->setSelectPos(mstart);
++            // Ctrl+click: keep the previous selection as the start of a distance measurement
++            pressctrl = e->modifiers() & Qt::ControlModifier;
++            world->setSelectPos(mstart, pressctrl);
+             update();
+         }
+     }
+@@ -673,7 +676,7 @@
+         holding = false;
+         mprev = e->pos();
+ 
+-        if (world && e->pos() == mstart)
++        if (world && e->pos() == mstart && !pressctrl)
+         {
+             world->setSelectPos(mstart);
+         }
+--- a/src/mapview.h	2026-10-15 20:00:19.355119681 +0200
++++ b/src/mapview.h	2026-10-15 20:45:14.770343056 +0200
+@@ -113,6 +113,7 @@
+     QPoint mstart, mprev;
+     Pos bstart;
+     bool measure;
++    bool pressctrl; // Ctrl was held when the button was pressed
+     int updatecounter;
+ 
+     std::vector<Shape> shapes;
+--- a/src/world.cpp	2026-10-15 15:13:35.742008506 +0200
++++ b/src/world.cpp	2026-10-15 20:52:15.887936922 +0200
+@@ -814,6 +814,12 @@
+     , selz()
+     , selopt(-1)
+     , selvp(Pos{0,0}, -1)
++    , anchorpending()
++    , anchored()
++    , anchoropt(-1)
++    , anchorvp(Pos{0,0}, -1)
++    , backupopt(-1)
++    , backupvp(Pos{0,0}, -1)
+     , qual()
+ {
+     setupGenerator(&g, wi.mc,  wi.large);
+@@ -860,6 +866,7 @@
+ 
+     this->dim = dim;
+     this->lopt = lopt;
++    anchored = anchorpending = false;
+     applySeed(&g, dim, wi.seed);
+     initSurfaceNoise(&sn, dim, g.seed);
+ 
+@@ -890,11 +897,23 @@
+         lvb[i].init4map(this, pixs, scale);
+ }
+ 
+-void QWorld::setSelectPos(QPoint pos)
++void QWorld::setSelectPos(QPoint pos, bool keepAnchor)
+ {
+     selx = pos.x();
+     selz = pos.y();
+     seldo = true;
++    if (keepAnchor && selopt != D_NONE)
++    {   // resolved in draw(): if the click hits a structure, the old
++        // selection becomes the anchor, otherwise it is restored
++        anchorpending = true;
++        backupopt = selopt;
++        backupvp = selvp;
++    }
++    else
++    {
++        anchorpending = false;
++        anchored = false;
++    }
+     selopt = D_NONE;
+ }
+ 
+@@ -1498,7 +1517,8 @@
+                         selopt = sopt;
+                         selvp = vp;
+                     }
+-                    if (selopt == sopt && selvp.p.x == spos.x && selvp.p.z == spos.z)
++                    if ((selopt == sopt && selvp.p.x == spos.x && selvp.p.z == spos.z) ||
++                    (anchored && anchoropt == sopt && anchorvp.p.x == spos.x && anchorvp.p.z == spos.z))
+                     {   // don't draw selected structure
+                         continue;
+                     }
+@@ -1530,7 +1550,8 @@
+                         selvp = vp;
+                     }
+                 }
+-                if (selopt == sopt && selvp.p.x == spos.x && selvp.p.z == spos.z)
++                if ((selopt == sopt && selvp.p.x == spos.x && selvp.p.z == spos.z) ||
++                    (anchored && anchoropt == sopt && anchorvp.p.x == spos.x && anchorvp.p.z == spos.z))
+                 {   // don't draw selected structure
+                     continue;
+                 }
+@@ -1626,6 +1647,45 @@
+     if (seldo)
+     {
+         seldo = false;
++        if (anchorpending)
++        {
++            anchorpending = false;
++            if (selopt != D_NONE)
++            {   // second structure hit: previous selection becomes the anchor,
++                // unless there already is one (then a->b, a->c, ...)
++                if (!anchored)
++                {
++                    anchored = true;
++                    anchoropt = backupopt;
++                    anchorvp = backupvp;
++                }
++            }
++            else
++            {   // missed: keep the previous selection
++                selopt = backupopt;
++                selvp = backupvp;
++            }
++        }
++    }
++
++    if (anchored)
++    {   // draw measurement anchor and the line to the current selection
++        const QPixmap& aicon = getMapIcon(anchoropt, &anchorvp);
++        qreal ax = vw/2.0 + (anchorvp.p.x - focusx) * blocks2pix;
++        qreal ay = vh/2.0 + (anchorvp.p.z - focusz) * blocks2pix;
++        qreal aw = aicon.rect().width() * 1.49;
++        qreal ah = aicon.rect().height() * 1.49;
++
++        if (selopt != D_NONE)
++        {
++            qreal sx = vw/2.0 + (selvp.p.x - focusx) * blocks2pix;
++            qreal sy = vh/2.0 + (selvp.p.z - focusz) * blocks2pix;
++            painter.setPen(QPen(QColor(0, 0, 0, 255), 3));
++            painter.drawLine(QPointF(ax, ay), QPointF(sx, sy));
++            painter.setPen(QPen(QColor(255, 255, 128, 255), 1));
++            painter.drawLine(QPointF(ax, ay), QPointF(sx, sy));
++        }
++        painter.drawPixmap(ax-aw/2, ay-ah/2, aw, ah, aicon);
+     }
+ 
+     if (selopt != D_NONE)
+@@ -1677,6 +1737,27 @@
+         }
+     }
+ 
++    if (anchored && selopt != D_NONE)
++    {   // distance label, drawn last so icons and info boxes do not cover it
++        qreal ax = vw/2.0 + (anchorvp.p.x - focusx) * blocks2pix;
++        qreal ay = vh/2.0 + (anchorvp.p.z - focusz) * blocks2pix;
++        qreal sx = vw/2.0 + (selvp.p.x - focusx) * blocks2pix;
++        qreal sy = vh/2.0 + (selvp.p.z - focusz) * blocks2pix;
++        qreal dx = selvp.p.x - anchorvp.p.x;
++        qreal dz = selvp.p.z - anchorvp.p.z;
++        QString s = QString::asprintf("%d blocks  (dx %d, dz %d)",
++            (int) floor(sqrt(dx*dx + dz*dz)), (int) dx, (int) dz);
++        QFont mf = QFont();
++        mf.setBold(true);
++        painter.setFont(mf);
++        QRect trec = painter.fontMetrics()
++                .boundingRect(0, 0, 0, 0, Qt::AlignLeft | Qt::AlignVCenter, s);
++        trec.moveCenter(QPoint((int)((ax+sx)/2), (int)((ay+sy)/2) - trec.height()/2 - 8));
++        painter.fillRect(trec.marginsAdded(QMargins(4,2,4,2)), QBrush(QColor(0, 0, 0, 190), Qt::SolidPattern));
++        painter.setPen(QPen(QColor(255, 255, 128, 255), 1));
++        painter.drawText(trec, s, QTextOption(Qt::AlignLeft | Qt::AlignVCenter));
++    }
++
+     if (activelv < 0)
+         activelv = 0;
+     if (activelv >= (int)lvb.size()-1)
+--- a/src/world.h	2026-10-15 15:13:35.742008506 +0200
++++ b/src/world.h	2026-10-15 20:44:34.621454907 +0200
+@@ -154,7 +154,8 @@
+ 
+     void draw(QPainter& painter, int vw, int vh, qreal focusx, qreal focusz, qreal blocks2pix);
+ 
+-    void setSelectPos(QPoint pos);
++    // keepAnchor: the previous selection becomes the anchor for a distance measurement
++    void setSelectPos(QPoint pos, bool keepAnchor = false);
+ 
+     int getBiome(Pos p);
+     QString getBiomeName(Pos p);
+@@ -226,6 +227,14 @@
+     int selopt;
+     VarPos selvp;
+ 
++    // distance measurement between two selected structures
++    bool anchorpending;
++    bool anchored;
++    int anchoropt;
++    VarPos anchorvp;
++    int backupopt;
++    VarPos backupvp;
++
+     qreal qual; // quality, i.e. maximum pixels per 'block' at the current layer
+ };
+ 

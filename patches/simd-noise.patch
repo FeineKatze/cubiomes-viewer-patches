@@ -1,0 +1,511 @@
+--- a/cubiomes/biomenoise.c
++++ b/cubiomes/biomenoise.c
+@@ -1,4 +1,5 @@
+ #include "biomenoise.h"
++#include "noise_simd.h"
+ 
+ #include "tables/btree18.h"
+ #include "tables/btree192.h"
+@@ -1209,6 +1210,93 @@
+ }
+ 
+ // Note: Climate noise is sampled at a 1:1 scale.
++// climate parameters of four positions, bit-identical to sampleBiomeNoise()
++static void sampleBiomeNoiseNP4(const BiomeNoise *bn, int64_t np[4][6],
++    const int x[4], const int y[4], const int z[4], uint32_t sample_flags)
++{
++    double px[4], pz[4], zero[4] = {0, 0, 0, 0}, xd[4], zd[4], v[4];
++    float t[4], h[4], c[4], e[4], d[4], w[4];
++    int l;
++    for (l = 0; l < 4; l++)
++    {
++        xd[l] = px[l] = x[l];
++        zd[l] = pz[l] = z[l];
++        d[l] = 0;
++    }
++    if (!(sample_flags & SAMPLE_NO_SHIFT))
++    {
++        double s1[4], s2[4];
++        sampleDoublePerlin4(&bn->climate[NP_SHIFT], xd, zero, zd, s1);
++        sampleDoublePerlin4(&bn->climate[NP_SHIFT], zd, xd, zero, s2);
++        for (l = 0; l < 4; l++)
++        {
++            px[l] += s1[l] * 4.0;
++            pz[l] += s2[l] * 4.0;
++        }
++    }
++
++    sampleDoublePerlin4(&bn->climate[NP_CONTINENTALNESS], px, zero, pz, v);
++    for (l = 0; l < 4; l++) c[l] = v[l];
++    sampleDoublePerlin4(&bn->climate[NP_EROSION], px, zero, pz, v);
++    for (l = 0; l < 4; l++) e[l] = v[l];
++    sampleDoublePerlin4(&bn->climate[NP_WEIRDNESS], px, zero, pz, v);
++    for (l = 0; l < 4; l++) w[l] = v[l];
++
++    if (!(sample_flags & SAMPLE_NO_DEPTH))
++    {
++        for (l = 0; l < 4; l++)
++        {
++            float np_param[] = {
++                c[l], e[l], peaksAndValleys(w[l]), w[l],
++            };
++            double off = getSpline(bn->sp, np_param) + 0.015F;
++            d[l] = 1.0 - (y[l] * 4) / 128.0 - 83.0/160.0 + off;
++        }
++    }
++
++    sampleDoublePerlin4(&bn->climate[NP_TEMPERATURE], px, zero, pz, v);
++    for (l = 0; l < 4; l++) t[l] = v[l];
++    sampleDoublePerlin4(&bn->climate[NP_HUMIDITY], px, zero, pz, v);
++    for (l = 0; l < 4; l++) h[l] = v[l];
++
++    for (l = 0; l < 4; l++)
++    {
++        np[l][0] = (int64_t)(10000.0F*t[l]);
++        np[l][1] = (int64_t)(10000.0F*h[l]);
++        np[l][2] = (int64_t)(10000.0F*c[l]);
++        np[l][3] = (int64_t)(10000.0F*e[l]);
++        np[l][4] = (int64_t)(10000.0F*d[l]);
++        np[l][5] = (int64_t)(10000.0F*w[l]);
++    }
++}
++
++void sampleBiomeNoise4(const BiomeNoise *bn, int ids[4], const int x[4],
++    const int y[4], const int z[4], int n, uint64_t *dat, uint32_t sample_flags)
++{
++    int l;
++    if (n < 2 || bn->nptype >= 0 || !useNoiseSimd())
++    {
++        for (l = 0; l < n; l++)
++            ids[l] = sampleBiomeNoise(bn, NULL, x[l], y[l], z[l], dat, sample_flags);
++        return;
++    }
++    int xs[4], ys[4], zs[4];
++    int64_t np[4][6];
++    for (l = 0; l < 4; l++)
++    {   // pad unused lanes with the last valid position
++        int k = l < n ? l : n - 1;
++        xs[l] = x[k]; ys[l] = y[k]; zs[l] = z[k];
++    }
++    sampleBiomeNoiseNP4(bn, np, xs, ys, zs, sample_flags);
++    for (l = 0; l < n; l++)
++    {
++        int id = none;
++        if (!(sample_flags & SAMPLE_NO_BIOME))
++            id = climateToBiome(bn->mc, (const uint64_t*)np[l], dat);
++        ids[l] = id;
++    }
++}
++
+ int sampleBiomeNoiseBeta(const BiomeNoiseBeta *bnb, int64_t *np, double *nv,
+     int x, int z)
+ {
+@@ -1588,8 +1676,13 @@
+     // iteration order is important
+     for (i = 0; i < 4; ++i) {
+         for (j = 0; j < 4; ++j) {
++            int xs[4], ys[4], zs[4], ids[4];
++            for (k = 0; k < 4; ++k) {
++                xs[k] = x4+i; ys[k] = y4+j; zs[k] = z4+k;
++            }
++            sampleBiomeNoise4(bn, ids, xs, ys, zs, 4, dat, 0);
+             for (k = 0; k < 4; ++k) {
+-                out[i][j][k] = sampleBiomeNoise(bn, NULL, x4+i, y4+j, z4+k, dat, 0);
++                out[i][j][k] = ids[k];
+             }
+         }
+     }
+@@ -1610,11 +1703,19 @@
+         for (j = 0; j < r.sz; j++)
+         {
+             int zj = (r.z+j)*scale + mid;
+-            for (i = 0; i < r.sx; i++)
++            for (i = 0; i < r.sx; i += 4)
+             {
+-                int xi = (r.x+i)*scale + mid;
+-                *p = sampleBiomeNoise(bn, NULL, xi, yk, zj, p_dat, flags);
+-                p++;
++                int xs[4], ys[4], zs[4], ids[4], l;
++                int n = r.sx - i < 4 ? r.sx - i : 4;
++                for (l = 0; l < n; l++)
++                {
++                    xs[l] = (r.x+i+l)*scale + mid;
++                    ys[l] = yk;
++                    zs[l] = zj;
++                }
++                sampleBiomeNoise4(bn, ids, xs, ys, zs, n, p_dat, flags);
++                for (l = 0; l < n; l++)
++                    *p++ = ids[l];
+             }
+         }
+     }
+--- a/cubiomes/biomenoise.h
++++ b/cubiomes/biomenoise.h
+@@ -277,6 +277,13 @@
+ int sampleBiomeNoise(const BiomeNoise *bn, int64_t *np, int x, int y, int z,
+     uint64_t *dat, uint32_t sample_flags);
+ void sampleNoiseParameters(BiomeNoise *bn, int x, int z, float np_param[4]);
++/* Same as n consecutive calls (n <= 4) of
++ *   ids[l] = sampleBiomeNoise(bn, NULL, x[l], y[l], z[l], dat, flags);
++ * in lane order, with identical results, but evaluates the noise for all
++ * lanes at once where the CPU supports it. */
++void sampleBiomeNoise4(const BiomeNoise *bn, int ids[4], const int x[4],
++    const int y[4], const int z[4], int n, uint64_t *dat, uint32_t flags);
++
+ int sampleBiomeNoiseBeta(const BiomeNoiseBeta *bnb, int64_t *np, double *nv,
+     int x, int z);
+ double approxSurfaceBeta(const BiomeNoiseBeta *bnb, const SurfaceNoiseBeta *snb,
+--- a/cubiomes/finders.c
++++ b/cubiomes/finders.c
+@@ -1,6 +1,7 @@
+ #include "finders.h"
+ #include "biomes.h"
+ #include "util.h"
++#include "noise_simd.h"
+ #include "features/abandoned_camp.h"
+ #include "features/end_city.h"
+ #include "features/fortress.h"
+@@ -980,20 +981,30 @@
+ 
+         for (j = -radius; j <= radius; j++)
+         {
+-            for (i = -radius; i <= radius; i++)
++            for (i = -radius; i <= radius; i += 4)
+             {
++                int xs[4], ys[4], zs[4], ids[4], l;
++                int n = radius - i + 1 < 4 ? radius - i + 1 : 4;
++                for (l = 0; l < n; l++)
++                {
++                    xs[l] = x+i+l; ys[l] = y; zs[l] = z+j;
++                }
+                 // emulate order-dependent biome generation MC-241546
+                 //int id = getBiomeAt(g, 4, x+i, y, z+j);
+-                int id = sampleBiomeNoise(&g->bn, NULL, x+i, y, z+j, &dat, 0);
+-                if (!id_matches(id, validB, validM))
+-                    continue;
+-
+-                if (found == 0 || nextInt(rng, found+1) == 0)
++                sampleBiomeNoise4(&g->bn, ids, xs, ys, zs, n, &dat, 0);
++                for (l = 0; l < n; l++)
+                 {
+-                    out.x = (x+i) * 4;
+-                    out.z = (z+j) * 4;
++                    int id = ids[l];
++                    if (!id_matches(id, validB, validM))
++                        continue;
++
++                    if (found == 0 || nextInt(rng, found+1) == 0)
++                    {
++                        out.x = (x+i+l) * 4;
++                        out.z = (z+j) * 4;
++                    }
++                    found++;
+                 }
+-                found++;
+             }
+         }
+     }
+@@ -1082,14 +1093,21 @@
+         for (i = 0; i < sx; i++)
+         {
+             uint64_t dat = 0;
+-            for (j = 0; j < sz; j++)
++            for (j = 0; j < sz; j += 4)
+             {
+-                if (g->mc >= MC_1_18)
+-                    id = sampleBiomeNoise(&g->bn, NULL, x1+i, y, z1+j, &dat, 0);
+-                else
+-                    id = getBiomeAt(g, 4, x1+i, y, z1+j);
+-                if (id < 0 || !id_matches(id, validB, validM))
+-                    goto L_no;
++                int xs[4], ys[4], zs[4], ids[4], l;
++                int n = sz - j < 4 ? sz - j : 4;
++                for (l = 0; l < n; l++)
++                {
++                    xs[l] = x1+i; ys[l] = y; zs[l] = z1+j+l;
++                }
++                sampleBiomeNoise4(&g->bn, ids, xs, ys, zs, n, &dat, 0);
++                for (l = 0; l < n; l++)
++                {
++                    id = ids[l];
++                    if (id < 0 || !id_matches(id, validB, validM))
++                        goto L_no;
++                }
+             }
+         }
+     }
+@@ -1349,17 +1367,87 @@
+     return fitnessFromNp(g, x, z, np);
+ }
+ 
++// Evaluates up to four candidates in order, with the same outcome as calling
++// calcFitnessBelow() for each of them in sequence (the shift, continentalness
++// and weirdness noise is computed for all four at once).
++static
++void fittestBatch(const Generator *g, Pos *pos, uint64_t *fitness,
++    const int xs[4], const int zs[4], int n)
++{
++    const BiomeNoise *bn = &g->bn;
++    const int64_t np0[6] = { 0, 0, 0, 0, 0, -5000 };
++    int active = 0, l;
++    for (l = 0; l < n; l++)
++        active |= fitnessFromNp(g, xs[l], zs[l], np0) < *fitness;
++    if (!active)
++        return;
++
++    double px[4], pz[4], xd[4], zd[4], zero[4] = {0, 0, 0, 0}, s1[4], s2[4], v[4];
++    float c[4], w[4];
++    for (l = 0; l < 4; l++)
++    {
++        int k = l < n ? l : n - 1;
++        xd[l] = px[l] = xs[k] >> 2;
++        zd[l] = pz[l] = zs[k] >> 2;
++    }
++    sampleDoublePerlin4(&bn->climate[NP_SHIFT], xd, zero, zd, s1);
++    sampleDoublePerlin4(&bn->climate[NP_SHIFT], zd, xd, zero, s2);
++    for (l = 0; l < 4; l++)
++    {
++        px[l] += s1[l] * 4.0;
++        pz[l] += s2[l] * 4.0;
++    }
++    sampleDoublePerlin4(&bn->climate[NP_CONTINENTALNESS], px, zero, pz, v);
++    for (l = 0; l < 4; l++) c[l] = v[l];
++    sampleDoublePerlin4(&bn->climate[NP_WEIRDNESS], px, zero, pz, v);
++    for (l = 0; l < 4; l++) w[l] = v[l];
++
++    for (l = 0; l < n; l++)
++    {
++        int64_t np[6] = { 0, 0, 0, 0, 0, 0 };
++        np[2] = (int64_t)(10000.0F*c[l]);
++        np[5] = (int64_t)(10000.0F*w[l]);
++        if (fitnessFromNp(g, xs[l], zs[l], np) >= *fitness)
++            continue;
++        float e = sampleDoublePerlin(&bn->climate[NP_EROSION], px[l], 0, pz[l]);
++        float t = sampleDoublePerlin(&bn->climate[NP_TEMPERATURE], px[l], 0, pz[l]);
++        float h = sampleDoublePerlin(&bn->climate[NP_HUMIDITY], px[l], 0, pz[l]);
++        np[0] = (int64_t)(10000.0F*t);
++        np[1] = (int64_t)(10000.0F*h);
++        np[3] = (int64_t)(10000.0F*e);
++        uint64_t fit = fitnessFromNp(g, xs[l], zs[l], np);
++        if (fit < *fitness)
++        {
++            pos->x = xs[l];
++            pos->z = zs[l];
++            *fitness = fit;
++        }
++    }
++}
++
+ static
+ void findFittest(const Generator *g, Pos *pos, uint64_t *fitness, double maxrad, double step)
+ {
+     double rad, ang;
+     Pos p = *pos;
++    int batch = g_fastSpawn && useNoiseSimd();
++    int bx[4], bz[4], bn = 0;
+     for (rad = step; rad <= maxrad; rad += step)
+     {
+         for (ang = 0; ang <= PI*2; ang += step/rad)
+         {
+             int x = p.x + (int)(sin(ang) * rad);
+             int z = p.z + (int)(cos(ang) * rad);
++            if (batch)
++            {
++                bx[bn] = x; bz[bn] = z;
++                if (++bn == 4)
++                {
++                    fittestBatch(g, pos, fitness, bx, bz, bn);
++                    bn = 0;
++                }
++                continue;
++            }
+             uint64_t fit = g_fastSpawn ? calcFitnessBelow(g, x, z, *fitness)
+                                        : calcFitness(g, x, z);
+             // Then update pos and fitness if combined total is lower/better
+@@ -1371,6 +1459,8 @@
+             }
+         }
+     }
++    if (bn)
++        fittestBatch(g, pos, fitness, bx, bz, bn);
+ }
+ 
+ static
+--- /dev/null
++++ b/cubiomes/noise_simd.c
+@@ -0,0 +1,151 @@
++#include "noise_simd.h"
++
++int g_noiseSimd = 1;
++
++#if defined(__x86_64__) && defined(__GNUC__) && !defined(CUBIOMES_NO_SIMD)
++
++#include <immintrin.h>
++
++#define AVX2 __attribute__((target("avx2")))
++
++int noiseSimdAvailable(void)
++{
++    static int avail = -1;
++    if (avail < 0)
++    {
++        __builtin_cpu_init();
++        avail = __builtin_cpu_supports("avx2") ? 1 : 0;
++    }
++    return avail;
++}
++
++// per-gradient-index flags, bit i is set for index i (see indexedLerp)
++#define G_X1_IS_B 0xAF00u   // first operand is b instead of a: 8,9,10,11,13,15
++#define G_X2_IS_B 0x500Fu   // second operand is b instead of c: 0,1,2,3,12,14
++#define G_NEG1    0xEAAAu   // first term negated: 1,3,5,7,9,11,13,14,15
++#define G_NEG2    0x8CCCu   // second term negated: 2,3,6,7,10,11,15
++
++AVX2 static inline __m256d lanemask(__m128i idx, unsigned bits)
++{
++    __m128i sh = _mm_srlv_epi32(_mm_set1_epi32((int)bits), idx);
++    sh = _mm_and_si128(sh, _mm_set1_epi32(1));
++    sh = _mm_sub_epi32(_mm_setzero_si128(), sh); // 0 or -1
++    return _mm256_castsi256_pd(_mm256_cvtepi32_epi64(sh));
++}
++
++AVX2 static inline __m256d grad4(__m128i idx, __m256d a, __m256d b, __m256d c)
++{
++    idx = _mm_and_si128(idx, _mm_set1_epi32(15));
++    const __m256d sign = _mm256_set1_pd(-0.0);
++    __m256d x1 = _mm256_blendv_pd(a, b, lanemask(idx, G_X1_IS_B));
++    __m256d x2 = _mm256_blendv_pd(c, b, lanemask(idx, G_X2_IS_B));
++    x1 = _mm256_xor_pd(x1, _mm256_and_pd(sign, lanemask(idx, G_NEG1)));
++    x2 = _mm256_xor_pd(x2, _mm256_and_pd(sign, lanemask(idx, G_NEG2)));
++    return _mm256_add_pd(x1, x2);
++}
++
++AVX2 static inline __m256d fade4(__m256d d)
++{   // d*d*d * (d * (d*6.0-15.0) + 10.0)
++    __m256d cube = _mm256_mul_pd(_mm256_mul_pd(d, d), d);
++    __m256d in = _mm256_sub_pd(_mm256_mul_pd(d, _mm256_set1_pd(6.0)), _mm256_set1_pd(15.0));
++    in = _mm256_add_pd(_mm256_mul_pd(d, in), _mm256_set1_pd(10.0));
++    return _mm256_mul_pd(cube, in);
++}
++
++AVX2 static inline __m256d lerp4(__m256d t, __m256d from, __m256d to)
++{   // from + t * (to - from)
++    return _mm256_add_pd(from, _mm256_mul_pd(t, _mm256_sub_pd(to, from)));
++}
++
++AVX2 static inline __m256d samplePerlin4(const PerlinNoise *noise,
++        __m256d d1, __m256d d2, __m256d d3)
++{
++    d1 = _mm256_add_pd(d1, _mm256_set1_pd(noise->a));
++    d2 = _mm256_add_pd(d2, _mm256_set1_pd(noise->b));
++    d3 = _mm256_add_pd(d3, _mm256_set1_pd(noise->c));
++    __m256d i1 = _mm256_floor_pd(d1);
++    __m256d i2 = _mm256_floor_pd(d2);
++    __m256d i3 = _mm256_floor_pd(d3);
++    d1 = _mm256_sub_pd(d1, i1);
++    d2 = _mm256_sub_pd(d2, i2);
++    d3 = _mm256_sub_pd(d3, i3);
++    __m256d t1 = fade4(d1), t2 = fade4(d2), t3 = fade4(d3);
++
++    int h1[4], h2[4], h3[4];
++    _mm_storeu_si128((__m128i*)h1, _mm256_cvttpd_epi32(i1));
++    _mm_storeu_si128((__m128i*)h2, _mm256_cvttpd_epi32(i2));
++    _mm_storeu_si128((__m128i*)h3, _mm256_cvttpd_epi32(i3));
++
++    const uint8_t *idx = noise->d;
++    int g[8][4]; // gradient indices: l1,l5 | l2,l6 | l3,l7 | l4,l8 order below
++    for (int l = 0; l < 4; l++)
++    {
++        uint8_t a1 = (uint8_t)h1[l], y = (uint8_t)h2[l], z = (uint8_t)h3[l];
++        uint8_t va = idx[a1] + y, vb = idx[(uint8_t)(a1)+1] + y;
++        // v2 from va, v3 from vb
++        uint8_t v2a = idx[va] + z, v2b = idx[va+1] + z;
++        uint8_t v3a = idx[vb] + z, v3b = idx[vb+1] + z;
++        g[0][l] = idx[v2a];     g[1][l] = idx[v2a+1];   // l1, l5
++        g[2][l] = idx[v3a];     g[3][l] = idx[v3a+1];   // l2, l6
++        g[4][l] = idx[v2b];     g[5][l] = idx[v2b+1];   // l3, l7
++        g[6][l] = idx[v3b];     g[7][l] = idx[v3b+1];   // l4, l8
++    }
++
++    const __m256d one = _mm256_set1_pd(1.0);
++    __m256d d1m = _mm256_sub_pd(d1, one);
++    __m256d d2m = _mm256_sub_pd(d2, one);
++    __m256d d3m = _mm256_sub_pd(d3, one);
++#define G(k) _mm_loadu_si128((const __m128i*)g[k])
++    __m256d l1 = grad4(G(0), d1,  d2,  d3);
++    __m256d l5 = grad4(G(1), d1,  d2,  d3m);
++    __m256d l2 = grad4(G(2), d1m, d2,  d3);
++    __m256d l6 = grad4(G(3), d1m, d2,  d3m);
++    __m256d l3 = grad4(G(4), d1,  d2m, d3);
++    __m256d l7 = grad4(G(5), d1,  d2m, d3m);
++    __m256d l4 = grad4(G(6), d1m, d2m, d3);
++    __m256d l8 = grad4(G(7), d1m, d2m, d3m);
++#undef G
++    l1 = lerp4(t1, l1, l2);
++    l3 = lerp4(t1, l3, l4);
++    l5 = lerp4(t1, l5, l6);
++    l7 = lerp4(t1, l7, l8);
++    l1 = lerp4(t2, l1, l3);
++    l5 = lerp4(t2, l5, l7);
++    return lerp4(t3, l1, l5);
++}
++
++AVX2 static __m256d sampleOctave4(const OctaveNoise *noise, __m256d x, __m256d y, __m256d z)
++{
++    __m256d v = _mm256_setzero_pd();
++    for (int i = 0; i < noise->octcnt; i++)
++    {
++        const PerlinNoise *p = noise->octaves + i;
++        __m256d lf = _mm256_set1_pd(p->lacunarity);
++        __m256d pv = samplePerlin4(p, _mm256_mul_pd(x, lf), _mm256_mul_pd(y, lf), _mm256_mul_pd(z, lf));
++        v = _mm256_add_pd(v, _mm256_mul_pd(_mm256_set1_pd(p->amplitude), pv));
++    }
++    return v;
++}
++
++AVX2 void sampleDoublePerlin4(const DoublePerlinNoise *noise,
++        const double x[4], const double y[4], const double z[4], double out[4])
++{
++    const __m256d f = _mm256_set1_pd(337.0 / 331.0);
++    __m256d vx = _mm256_loadu_pd(x), vy = _mm256_loadu_pd(y), vz = _mm256_loadu_pd(z);
++    __m256d v = _mm256_setzero_pd();
++    v = _mm256_add_pd(v, sampleOctave4(&noise->octA, vx, vy, vz));
++    v = _mm256_add_pd(v, sampleOctave4(&noise->octB, _mm256_mul_pd(vx, f), _mm256_mul_pd(vy, f), _mm256_mul_pd(vz, f)));
++    _mm256_storeu_pd(out, _mm256_mul_pd(v, _mm256_set1_pd(noise->amplitude)));
++}
++
++#else
++
++int noiseSimdAvailable(void) { return 0; }
++void sampleDoublePerlin4(const DoublePerlinNoise *noise,
++        const double x[4], const double y[4], const double z[4], double out[4])
++{
++    for (int i = 0; i < 4; i++)
++        out[i] = sampleDoublePerlin(noise, x[i], y[i], z[i]);
++}
++
++#endif
+--- /dev/null
++++ b/cubiomes/noise_simd.h
+@@ -0,0 +1,21 @@
++#ifndef NOISE_SIMD_H_
++#define NOISE_SIMD_H_
++#include "noise.h"
++#ifdef __cplusplus
++extern "C" {
++#endif
++/* Evaluates sampleDoublePerlin() for four points at once. Results are
++ * bit-identical to the scalar function. Only available where
++ * noiseSimdAvailable() returns non-zero (x86-64 with AVX2); callers must
++ * fall back to the scalar function otherwise. */
++int noiseSimdAvailable(void);
++/* Runtime switch (default on). Even when on, the SIMD paths are only taken
++ * if the CPU supports them. All results are identical either way. */
++extern int g_noiseSimd;
++static inline int useNoiseSimd(void) { return g_noiseSimd && noiseSimdAvailable(); }
++void sampleDoublePerlin4(const DoublePerlinNoise *noise,
++        const double x[4], const double y[4], const double z[4], double out[4]);
++#ifdef __cplusplus
++}
++#endif
++#endif

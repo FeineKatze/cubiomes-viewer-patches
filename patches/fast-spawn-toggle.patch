@@ -1,0 +1,156 @@
+--- a/src/config.h
++++ b/src/config.h
+@@ -38,6 +38,8 @@
+ 
+ extern qreal g_fontscale;
+ extern qreal g_iconscale;
++extern bool g_fastSpawnForceOff; // --no-fast-spawn or CUBIOMES_NO_FAST_SPAWN
++void applyFastSpawn(bool enabled);
+ 
+ // Keep the extended generator settings in global scope.
+ extern ExtGenConfig g_extgen;
+@@ -172,6 +174,7 @@
+ struct Config
+ {
+     bool smoothMotion;
++    bool fastSpawn;
+     bool showBBoxes;
+     bool restoreSession;
+     bool restoreWindow;
+--- a/src/config.cpp
++++ b/src/config.cpp
+@@ -17,6 +17,12 @@
+ 
+ qreal g_fontscale = 1;
+ qreal g_iconscale = 1;
++bool g_fastSpawnForceOff = false;
++
++void applyFastSpawn(bool enabled)
++{
++    g_fastSpawn = (enabled && !g_fastSpawnForceOff) ? 1 : 0;
++}
+ 
+ 
+ void ExtGenConfig::reset()
+@@ -351,6 +357,7 @@
+ void Config::reset()
+ {
+     smoothMotion = true;
++    fastSpawn = true;
+     showBBoxes = true;
+     restoreSession = true;
+     restoreWindow = false;
+@@ -381,6 +388,8 @@
+ void Config::load(QSettings& settings)
+ {
+     smoothMotion = settings.value("config/smoothMotion", smoothMotion).toBool();
++    fastSpawn = settings.value("config/fastSpawn", fastSpawn).toBool();
++    applyFastSpawn(fastSpawn);
+     showBBoxes = settings.value("config/showBBoxes", showBBoxes).toBool();
+     restoreSession = settings.value("config/restoreSession", restoreSession).toBool();
+     restoreWindow = settings.value("config/restoreWindow", restoreWindow).toBool();
+@@ -404,6 +413,7 @@
+ void Config::save(QSettings& settings)
+ {
+     settings.setValue("config/smoothMotion", smoothMotion);
++    settings.setValue("config/fastSpawn", fastSpawn);
+     settings.setValue("config/showBBoxes", showBBoxes);
+     settings.setValue("config/restoreSession", restoreSession);
+     settings.setValue("config/restoreWindow", restoreWindow);
+--- a/src/configdialog.ui
++++ b/src/configdialog.ui
+@@ -260,6 +260,16 @@
+           <item row="5" column="2" colspan="2">
+            <widget class="QSpinBox" name="spinThreads"/>
+           </item>
++          <item row="8" column="0" colspan="4">
++           <widget class="QCheckBox" name="checkFastSpawn">
++            <property name="toolTip">
++             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Faster spawn point search (same results). Disable this if spawn points look wrong.&lt;/p&gt;&lt;p&gt;Always off when started with --no-fast-spawn or CUBIOMES_NO_FAST_SPAWN=1.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
++            </property>
++            <property name="text">
++             <string>Fast spawn search</string>
++            </property>
++           </widget>
++          </item>
+           <item row="7" column="0" colspan="4">
+            <widget class="QCheckBox" name="checkSmooth">
+             <property name="toolTip">
+--- a/src/configdialog.cpp
++++ b/src/configdialog.cpp
+@@ -63,6 +63,8 @@
+ void ConfigDialog::initConfig(Config *config)
+ {
+     ui->checkSmooth->setChecked(config->smoothMotion);
++    ui->checkFastSpawn->setChecked(config->fastSpawn && !g_fastSpawnForceOff);
++    ui->checkFastSpawn->setEnabled(!g_fastSpawnForceOff);
+     ui->checkBBoxes->setChecked(config->showBBoxes);
+     ui->checkRestore->setChecked(config->restoreSession);
+     ui->checkWindowPos->setChecked(config->restoreWindow);
+@@ -90,6 +92,8 @@
+ Config ConfigDialog::getConfig()
+ {
+     conf.smoothMotion = ui->checkSmooth->isChecked();
++    if (!g_fastSpawnForceOff)
++        conf.fastSpawn = ui->checkFastSpawn->isChecked();
+     conf.showBBoxes = ui->checkBBoxes->isChecked();
+     conf.restoreSession = ui->checkRestore->isChecked();
+     conf.restoreWindow = ui->checkWindowPos->isChecked();
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -1,4 +1,5 @@
+ #include "aboutdialog.h"
++#include "config.h"
+ #include "headless.h"
+ #include "mainwindow.h"
+ 
+@@ -10,6 +11,8 @@
+ #include <QGuiApplication>
+ #include <QStandardPaths>
+ 
++#include <stdlib.h>
++
+ static int structureConfigProvider(int stype, int mc, StructureConfig *sconf)
+ {
+     int ok = getStructureConfig_default(stype, mc, sconf);
+@@ -36,6 +39,9 @@
+     bool clear = false;
+     bool reset = false;
+     bool usage = false;
++    const char *envfs = getenv("CUBIOMES_NO_FAST_SPAWN");
++    if (envfs && *envfs && strcmp(envfs, "0") != 0)
++        g_fastSpawnForceOff = true;
+     QString sessionpath;
+     QString resultspath;
+ 
+@@ -45,6 +51,8 @@
+             version = true;
+         else if (strcmp(argv[i], "--nogui") == 0)
+             nogui = true;
++        else if (strcmp(argv[i], "--no-fast-spawn") == 0)
++            g_fastSpawnForceOff = true;
+         else if (strcmp(argv[i], "--reset") == 0)
+             clear = true;
+         else if (strcmp(argv[i], "--reset-all") == 0)
+@@ -69,6 +77,7 @@
+                 "      --help                 Display this help and exit.\n"
+                 "      --version              Output version information and exit.\n"
+                 "      --nogui                Run in headless search mode.\n"
++                "      --no-fast-spawn        Use the original, slower spawn search (also: CUBIOMES_NO_FAST_SPAWN=1).\n"
+                 "      --reset                Discard results and reset starting seed.\n"
+                 "      --reset-all            Clear settings and remove all session data.\n"
+                 "      --session=file         Open this session file.\n"
+--- a/src/headless.cpp
++++ b/src/headless.cpp
+@@ -49,6 +49,11 @@
+ 
+     QSettings settings(APP_STRING, APP_STRING);
+     g_extgen.load(settings);
++    {
++        Config hc;
++        hc.reset();
++        hc.load(settings); // also applies the fast spawn setting
++    }
+ 
+     if (!loadSession(sessionpath, reset))
+         return;

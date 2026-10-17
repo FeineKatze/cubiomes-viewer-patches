@@ -1,0 +1,115 @@
+--- a/cubiomes/finders.c
++++ b/cubiomes/finders.c
+@@ -4513,15 +4513,29 @@
+     volatile char *stop;
+     Pos at;             // centre (in blocks) of the optional circular area
+     int64_t rmaxsq;     // squared radius + 1, or 0 for the whole rectangle
++    int touch;          // cells count if any of their blocks are inside the circle
+ } gdt_info_t;
+ 
+-// true if the cell (x,z) of the given range lies outside the circular area
+-static inline int cell_outside(Range r, Pos at, int64_t rmaxsq, int x, int z)
++// true if the cell (x,z) of the given range lies outside the circular area.
++// By default a cell is judged by its corner (lowest x and z block). With
++// 'touch' it is inside if any block of the cell is, i.e. its closest block.
++static inline int cell_outside(Range r, Pos at, int64_t rmaxsq, int touch, int x, int z)
+ {
+     if (!rmaxsq)
+         return 0;
+-    int64_t dx = (int64_t)x * r.scale - at.x;
+-    int64_t dz = (int64_t)z * r.scale - at.z;
++    int64_t x0 = (int64_t)x * r.scale, z0 = (int64_t)z * r.scale;
++    int64_t dx, dz;
++    if (touch)
++    {
++        int64_t x1 = x0 + r.scale - 1, z1 = z0 + r.scale - 1;
++        dx = at.x < x0 ? x0 - at.x : at.x > x1 ? at.x - x1 : 0;
++        dz = at.z < z0 ? z0 - at.z : at.z > z1 ? at.z - z1 : 0;
++    }
++    else
++    {
++        dx = x0 - at.x;
++        dz = z0 - at.z;
++    }
+     return dx*dx + dz*dz >= rmaxsq;
+ }
+ 
+@@ -4534,7 +4548,7 @@
+     int idx = (z - info->r.z) * info->r.sx + (x - info->r.x);
+     if (info->ids[idx] != -1)
+         return 0;
+-    if (cell_outside(info->r, info->at, info->rmaxsq, x, z))
++    if (cell_outside(info->r, info->at, info->rmaxsq, info->touch, x, z))
+         return 0;
+     int id = getBiomeAt(info->g, info->r.scale, x, info->r.y, z);
+     info->ids[idx] = id;
+@@ -4566,7 +4580,7 @@
+         )
+ {
+     Pos at = {0, 0};
+-    return checkForBiomesRadial(g, cache, r, dim, seed, filter, stop, at, 0);
++    return checkForBiomesRadial(g, cache, r, dim, seed, filter, stop, at, 0, 0);
+ }
+ 
+ int checkForBiomesRadial(
+@@ -4578,7 +4592,8 @@
+         const BiomeFilter * filter,
+         volatile char     * stop,
+         Pos                 at,
+-        int64_t             rmaxsq
++        int64_t             rmaxsq,
++        int                 touch
+         )
+ {
+     if (stop && *stop)
+@@ -4602,7 +4617,7 @@
+         uint64_t b = 0;
+         for (i = 0; i < r.sx*r.sz; i++)
+         {
+-            if (cell_outside(r, at, rmaxsq, r.x + i % r.sx, r.z + i / r.sx))
++            if (cell_outside(r, at, rmaxsq, touch, r.x + i % r.sx, r.z + i / r.sx))
+                 continue;
+             b |= (1ULL << ids[i]);
+         }
+@@ -4662,6 +4677,7 @@
+     info->stop = stop;
+     info->at = at;
+     info->rmaxsq = rmaxsq;
++    info->touch = touch;
+ 
+     ret = 0;
+     memset(ids, -1, r.sx * r.sz * sizeof(int));
+@@ -4746,7 +4762,7 @@
+             break;
+         if (t.y == 0 && info->ids[t.i] != -1)
+             continue;
+-        if (cell_outside(r, at, rmaxsq, r.x+t.x, r.z+t.z))
++        if (cell_outside(r, at, rmaxsq, touch, r.x+t.x, r.z+t.z))
+         {   // cells outside the circle do not count as trials
+             if (trials < n)
+                 trials++;
+--- a/cubiomes/finders.h
++++ b/cubiomes/finders.h
+@@ -774,8 +774,10 @@
+         );
+ 
+ /* Like checkForBiomes(), but only the cells within a circle around 'at' (in
+- * blocks, distance measured to the cell origin, strictly inside if the squared
+- * distance is below rmaxsq) are considered. Pass rmaxsq=0 for no restriction.
++ * blocks, strictly inside if the squared distance is below rmaxsq) are
++ * considered. A cell is judged by its origin (lowest x and z), or, with
++ * touch != 0, by its closest block, so every cell that overlaps the circle
++ * counts. Pass rmaxsq=0 for no restriction.
+  * Not supported for the layer based overworld (versions up to 1.17), where it
+  * returns 0.
+  */
+@@ -788,7 +790,8 @@
+         const BiomeFilter * filter,
+         volatile char     * stop,
+         Pos                 at,
+-        int64_t             rmaxsq
++        int64_t             rmaxsq,
++        int                 touch
+         );
+ 
+ /* Specialization of checkForBiomes() for a LayerStack, i.e. the Overworld up

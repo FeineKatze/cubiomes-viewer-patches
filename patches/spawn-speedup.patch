@@ -1,0 +1,91 @@
+--- a/cubiomes/finders.c
++++ b/cubiomes/finders.c
+@@ -1264,12 +1264,13 @@
+ }
+ 
+ 
++int g_fastSpawn = 1;
++
++// spawn fitness from climate noise values (monotonic in each parameter's
++// distance from its allowed range)
+ static
+-uint64_t calcFitness(const Generator *g, int x, int z)
++uint64_t fitnessFromNp(const Generator *g, int x, int z, const int64_t *np)
+ {
+-    int64_t np[6];
+-    uint32_t flags = SAMPLE_NO_DEPTH | SAMPLE_NO_BIOME;
+-    sampleBiomeNoise(&g->bn, np, x>>2, 0, z>>2, NULL, flags);
+     const int64_t spawn_np[][2] = {
+         {-10000,10000},{-10000,10000},{-1100,10000},{-10000,10000},{0,0},
+         {-10000,-1600},{1600,10000} // [6]: weirdness for the second noise point
+@@ -1308,6 +1309,47 @@
+ }
+ 
+ static
++uint64_t calcFitness(const Generator *g, int x, int z)
++{
++    int64_t np[6];
++    uint32_t flags = SAMPLE_NO_DEPTH | SAMPLE_NO_BIOME;
++    sampleBiomeNoise(&g->bn, np, x>>2, 0, z>>2, NULL, flags);
++    return fitnessFromNp(g, x, z, np);
++}
++
++// Same result as calcFitness() whenever that is below 'best'; otherwise returns
++// 'best'. Climate parameters are only sampled while the candidate can still win,
++// since every parameter adds a non-negative term to the fitness.
++static
++uint64_t calcFitnessBelow(const Generator *g, int x, int z, uint64_t best)
++{
++    const BiomeNoise *bn = &g->bn;
++    // lower bound from the distance term alone (all parameters inside their ranges)
++    int64_t np[6] = { 0, 0, 0, 0, 0, -5000 };
++    if (fitnessFromNp(g, x, z, np) >= best)
++        return best;
++
++    int sx = x >> 2, sz = z >> 2;
++    double px = sx, pz = sz;
++    px += sampleDoublePerlin(&bn->climate[NP_SHIFT], sx, 0, sz) * 4.0;
++    pz += sampleDoublePerlin(&bn->climate[NP_SHIFT], sz, sx, 0) * 4.0;
++    float c = sampleDoublePerlin(&bn->climate[NP_CONTINENTALNESS], px, 0, pz);
++    float w = sampleDoublePerlin(&bn->climate[NP_WEIRDNESS], px, 0, pz);
++    np[2] = (int64_t)(10000.0F*c);
++    np[5] = (int64_t)(10000.0F*w);
++    if (fitnessFromNp(g, x, z, np) >= best)
++        return best;
++
++    float e = sampleDoublePerlin(&bn->climate[NP_EROSION], px, 0, pz);
++    float t = sampleDoublePerlin(&bn->climate[NP_TEMPERATURE], px, 0, pz);
++    float h = sampleDoublePerlin(&bn->climate[NP_HUMIDITY], px, 0, pz);
++    np[0] = (int64_t)(10000.0F*t);
++    np[1] = (int64_t)(10000.0F*h);
++    np[3] = (int64_t)(10000.0F*e);
++    return fitnessFromNp(g, x, z, np);
++}
++
++static
+ void findFittest(const Generator *g, Pos *pos, uint64_t *fitness, double maxrad, double step)
+ {
+     double rad, ang;
+@@ -1318,7 +1360,8 @@
+         {
+             int x = p.x + (int)(sin(ang) * rad);
+             int z = p.z + (int)(cos(ang) * rad);
+-            uint64_t fit = calcFitness(g, x, z);
++            uint64_t fit = g_fastSpawn ? calcFitnessBelow(g, x, z, *fitness)
++                                       : calcFitness(g, x, z);
+             // Then update pos and fitness if combined total is lower/better
+             if (fit < *fitness)
+             {
+--- a/cubiomes/finders.h
++++ b/cubiomes/finders.h
+@@ -397,6 +397,10 @@
+  */
+ Pos getSpawn(const Generator *g);
+ 
++// 1 (default): skip climate samples that cannot improve the spawn estimate
++// (identical result, much faster); 0: original exhaustive evaluation
++extern int g_fastSpawn;
++
+ 
+ enum Blocks {
+     ANCIENT_DEBRIS,

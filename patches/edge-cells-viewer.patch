@@ -1,0 +1,80 @@
+--- a/src/search.h
++++ b/src/search.h
+@@ -605,6 +605,7 @@
+         FLG_MATCH_ANY   = 0x0010,
+         FLG_IN_RANGE    = 0x0020,
+         FLG_INVERT      = 0x0040,
++        FLG_EDGE_CELLS  = 0x0080, // radial biome areas: cells touching the circle count
+     };
+     enum { // variant flags
+         VAR_WITH_START  = 0x0001, // restrict start piece index and biome
+--- a/src/search.cpp
++++ b/src/search.cpp
+@@ -2137,7 +2137,8 @@
+             int y = (s == 0 ? cond->y : cond->y >> 2);
+             Range r = {1<<s, rx1, rz1, w, h, y, 1};
+             valid = checkForBiomesRadial(&env->g, NULL, r, finfo.dim, env->seed,
+-                &cond->bf, (volatile char*)env->stop, at, rmax) > 0;
++                &cond->bf, (volatile char*)env->stop, at, rmax,
++                (cond->flags & Condition::FLG_EDGE_CELLS) != 0) > 0;
+         }
+         return valid ? COND_OK : COND_FAILED;
+ 
+--- a/src/conditiondialog.cpp
++++ b/src/conditiondialog.cpp
+@@ -304,6 +304,7 @@
+     ui->checkSkipRef->setChecked(false);
+     ui->radioSquare->setChecked(true);
+     ui->checkRadius->setChecked(false);
++    ui->checkEdgeCells->setChecked(true);
+     ui->lineCoverage1->setText("50");
+     ui->lineCoverage2->setText("50");
+     ui->lineConfidence1->setText("95");
+@@ -364,6 +365,7 @@
+ 
+         ui->checkApprox->setChecked(cond.flags & Condition::FLG_APPROX);
+         ui->checkMatchAny->setChecked(cond.flags & Condition::FLG_MATCH_ANY);
++        ui->checkEdgeCells->setChecked(cond.flags & Condition::FLG_EDGE_CELLS);
+         ui->checkSamplePos->setChecked(cond.count == 1);
+         ui->lineCoverage1->setText(QString::number(cond.converage ? cond.converage * 100 : 50));
+         ui->lineCoverage2->setText(QString::number(cond.converage ? cond.converage * 100 : 50));
+@@ -615,6 +617,11 @@
+         ui->stackedWidget->setCurrentWidget(ui->pageBiomes);
+         ui->checkApprox->setEnabled(wi.mc <= MC_1_17 || ft.grid == 4);
+         ui->checkMatchAny->setEnabled(true);
++        {   // only the exact biome conditions with a circular area have edge cells
++            bool radial = ui->checkRadius->isEnabled() && ui->checkRadius->isChecked();
++            ui->checkEdgeCells->setVisible(filterindex != F_BIOME_SAMPLE);
++            ui->checkEdgeCells->setEnabled(radial);
++        }
+         if (filterindex == F_BIOME_SAMPLE)
+             ui->stackedBiome->setCurrentWidget(ui->pageBiomeOptSample);
+         else
+@@ -1068,6 +1075,8 @@
+         c.flags |= Condition::FLG_APPROX;
+     if (ui->checkMatchAny->isChecked())
+         c.flags |= Condition::FLG_MATCH_ANY;
++    if (ui->checkEdgeCells->isChecked() && ui->checkEdgeCells->isEnabled())
++        c.flags |= Condition::FLG_EDGE_CELLS;
+     if (ui->comboHeightRange->currentIndex() == 0)
+         c.flags |= Condition::FLG_IN_RANGE;
+     if (ui->checkInvertRange->isChecked())
+--- a/src/conditiondialog.ui
++++ b/src/conditiondialog.ui
+@@ -564,6 +564,16 @@
+                     </property>
+                    </widget>
+                   </item>
++                  <item row="3" column="0" colspan="2">
++                   <widget class="QCheckBox" name="checkEdgeCells">
++                    <property name="toolTip">
++                     <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Radial area only: also check cells that only partly overlap the circle. Without this a cell is only used if its corner is inside the circle, so a biome just inside the edge can be missed.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
++                    </property>
++                    <property name="text">
++                     <string>Include cells touching the edge</string>
++                    </property>
++                   </widget>
++                  </item>
+                   <item row="2" column="0">
+                    <widget class="QCheckBox" name="checkMatchAny">
+                     <property name="toolTip">

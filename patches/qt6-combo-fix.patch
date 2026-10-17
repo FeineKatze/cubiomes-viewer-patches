@@ -1,0 +1,11 @@
+--- a/src/conditiondialog.cpp
++++ b/src/conditiondialog.cpp
+@@ -725,7 +725,7 @@
+     for (int i = 0, n = ui->comboScale->count(); i < n; i++)
+     {
+         ui->comboScale->setItemText(i, QString::asprintf("1:%d", 1 << (i*2)));
+-        ui->comboScale->setItemData(i, QVariant::Invalid, Qt::UserRole-1);
++        ui->comboScale->setItemData(i, QVariant(), Qt::UserRole-1); // not QVariant::Invalid: Qt6 turns that into 0 (item disabled)
+     }
+     // ui->comboScale->setItemData(0, false, Qt::UserRole-1); // disable voronoi
+ 
