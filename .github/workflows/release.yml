@@ -117,8 +117,10 @@ jobs:
           sed -i 's/^\( *\)CONFIG += static_gnu/\1# CONFIG += static_gnu/' cubiomes-viewer/cubiomes-viewer.pro
           set -o pipefail
           mkdir -p build && cd build
+          # The generated makefiles use cmd.exe syntax, but make would pick the MSYS2
+          # sh, so cmd.exe has to be requested.
           { qmake6 CONFIG+=release ../cubiomes-viewer/cubiomes-viewer.pro
-            mingw32-make -j"$(nproc)"; } 2>&1 | tee build.log
+            mingw32-make -j"$(nproc)" SHELL=cmd.exe; } 2>&1 | tee build.log
 
       - name: Test and package (Windows)
         if: runner.os == 'Windows'
@@ -146,7 +148,9 @@ jobs:
         run: |
           set -o pipefail
           mkdir build && cd build
-          { qmake CONFIG+=release ../cubiomes-viewer/cubiomes-viewer.pro
+          # Qt 6.7.3's qyieldcpu.h uses __yield() without declaring it, which newer
+          # clang rejects. arm_acle.h declares it.
+          { qmake CONFIG+=release ../cubiomes-viewer/cubiomes-viewer.pro -after "QMAKE_CXXFLAGS+=-include arm_acle.h"
             CFLAGS="-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk" make -j"$(sysctl -n hw.ncpu)"; } 2>&1 | tee build.log
 
       - name: Test and package (macOS)
