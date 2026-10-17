@@ -134,14 +134,46 @@ jobs:
           mingw32-make -j $env:NUMBER_OF_PROCESSORS 2>&1 | Tee-Object -FilePath build.log -Append
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Test and package (Windows)
+      - name: Bundle the libraries (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
           mkdir -p dist/cubiomes-viewer
           windeployqt6 --no-translations --no-opengl-sw --compiler-runtime --dir dist/cubiomes-viewer build/release/cubiomes-viewer.exe
           cp build/release/cubiomes-viewer.exe LICENSE dist/cubiomes-viewer/
-          ./dist/cubiomes-viewer/cubiomes-viewer.exe --version
+          cd dist/cubiomes-viewer
+          # windeployqt only copies Qt's own libraries. Also bundle every other MSYS2
+          # library (MinGW runtime, zlib, harfbuzz, ...) that the program, the Qt
+          # libraries and the Qt plugins depend on, until nothing new turns up.
+          prefix="${MSYSTEM_PREFIX:-/mingw64}"
+          for round in 1 2 3 4 5 6 7 8; do
+            added=0
+            while IFS= read -r file; do
+              while IFS= read -r dll; do
+                if [ ! -e "$(basename "$dll")" ]; then
+                  cp "$dll" .
+                  echo "bundled $(basename "$dll")"
+                  added=1
+                fi
+              done < <(ldd "$file" 2>/dev/null | awk '/=>/ {print $3}' | grep "^$prefix/" || true)
+            done < <(find . \( -name '*.exe' -o -name '*.dll' \))
+            [ "$added" = 0 ] && break
+          done
+
+      # Run the bundle with a PATH that has no MSYS2 or MinGW in it, like on a normal PC.
+      - name: Test the bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Windows\System32;C:\Windows"
+          $exe = Join-Path $PWD "dist\cubiomes-viewer\cubiomes-viewer.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList "--version" -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { Write-Error "cubiomes-viewer.exe exited with code $($p.ExitCode)"; exit 1 }
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
           (cd dist && zip -r "cubiomes-viewer-${VERSION}-${{ matrix.name }}.zip" cubiomes-viewer)
           rm -r dist/cubiomes-viewer
 
