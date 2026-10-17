@@ -50,6 +50,15 @@ The patches are plain C/C++/Qt source changes and should work on Windows, but **
 
 Do not add `-march=native` to a build you want to share. The AVX2 code does not need it: it is selected at runtime. [`docs/windows-ai-prompt.md`](docs/windows-ai-prompt.md) is a ready-made prompt for an AI assistant that walks you through the steps above.
 
+## Automated builds
+
+`.github/workflows/release.yml` builds the patched viewer for Linux (x86_64), Windows (x86_64, MinGW) and macOS (arm64) on GitHub Actions.
+
+- Push a version tag such as `v1.0.0` to build everything and create a **draft** release with the binaries, a checksum file and the exact patched source archive.
+- Or use "Run workflow" on the Actions tab to build without a release. The files are then available as workflow artifacts.
+
+Linux builds need Qt 6 installed on your system. The Windows and macOS builds have not been tested on real machines yet.
+
 ## Patch order
 
 `apply.sh` applies these in this order. The viewer patches go on the viewer repository, and the backend patches go on the `cubiomes/` submodule.

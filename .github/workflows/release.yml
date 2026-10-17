@@ -1,0 +1,200 @@
+name: Release builds
+
+# Builds the patched Cubiomes Viewer for Linux, Windows and macOS and, for version
+# tags (v*), publishes the result as a GitHub release.
+#   - Push a tag like v1.0.0 to build and create a DRAFT release.
+#   - "Run workflow" on the Actions tab builds everything without a release;
+#     the files are then only available as workflow artifacts.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dev-{0}', github.run_number) }}
+
+jobs:
+  # One patched source tree for all platforms. Built on Linux so the files keep
+  # their line endings, and published with the release as the corresponding source.
+  prepare:
+    name: Patch source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Clone upstream and apply the patches
+        run: ./build-linux.sh --no-build
+
+      - name: Pack the patched source
+        run: |
+          mkdir -p dist
+          tar --exclude=.git --exclude=.github \
+              -czf "dist/cubiomes-viewer-patched-source-${VERSION}.tar.gz" \
+              -C work cubiomes-viewer
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-source
+          path: dist/*
+          if-no-files-found: error
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  name: linux-x86_64 }
+          - { os: windows-latest, name: windows-x86_64 }
+          - { os: macos-latest,   name: macos-arm64 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-source
+          path: source
+
+      - name: Unpack the patched source
+        run: tar -xzf source/cubiomes-viewer-patched-source-*.tar.gz
+
+      # ---------------------------------------------------------------- Linux
+      - name: Install Qt 6 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-base-dev libgl1-mesa-dev
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir build && cd build
+          qmake6 CONFIG+=release ../cubiomes-viewer/cubiomes-viewer.pro
+          make -j"$(nproc)"
+
+      - name: Test and package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          ./build/cubiomes-viewer --version
+          mkdir -p dist/cubiomes-viewer
+          cp build/cubiomes-viewer LICENSE dist/cubiomes-viewer/
+          echo "Needs Qt 6 (libQt6Widgets) installed, e.g. the qt6-base package." > dist/cubiomes-viewer/README.txt
+          tar -czf "dist/cubiomes-viewer-${VERSION}-${{ matrix.name }}.tar.gz" -C dist cubiomes-viewer
+          rm -r dist/cubiomes-viewer
+
+      # -------------------------------------------------------------- Windows
+      # MSYS2 provides the MinGW compiler and Qt 6 together.
+      - name: Set up MSYS2 with Qt 6 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-qt6-tools
+            zip
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          # The project statically links the whole program on Windows, which cannot
+          # work against the shared Qt of MSYS2. Qt and the MinGW runtime are bundled
+          # as DLLs by windeployqt instead.
+          sed -i 's/^\( *\)CONFIG += static_gnu/\1# CONFIG += static_gnu/' cubiomes-viewer/cubiomes-viewer.pro
+          mkdir -p build && cd build
+          qmake6 CONFIG+=release ../cubiomes-viewer/cubiomes-viewer.pro
+          mingw32-make -j"$(nproc)"
+
+      - name: Test and package (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          mkdir -p dist/cubiomes-viewer
+          windeployqt6 --no-translations --no-opengl-sw --compiler-runtime --dir dist/cubiomes-viewer build/release/cubiomes-viewer.exe
+          cp build/release/cubiomes-viewer.exe LICENSE dist/cubiomes-viewer/
+          ./dist/cubiomes-viewer/cubiomes-viewer.exe --version
+          (cd dist && zip -r "cubiomes-viewer-${VERSION}-${{ matrix.name }}.zip" cubiomes-viewer)
+          rm -r dist/cubiomes-viewer
+
+      # ---------------------------------------------------------------- macOS
+      - name: Install Qt 6 (macOS)
+        if: runner.os == 'macOS'
+        uses: jurplel/install-qt-action@v4.4.1
+        with:
+          aqtversion: '==3.1.*'
+          version: '6.7.3'
+          archives: 'x86_64 qtbase qttools'
+          cache: true
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir build && cd build
+          qmake CONFIG+=release ../cubiomes-viewer/cubiomes-viewer.pro
+          CFLAGS="-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk" make -j"$(sysctl -n hw.ncpu)"
+
+      - name: Test and package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cd build
+          macdeployqt cubiomes-viewer.app -dmg
+          ./cubiomes-viewer.app/Contents/MacOS/cubiomes-viewer --version
+          mkdir -p ../dist
+          mv cubiomes-viewer.dmg "../dist/cubiomes-viewer-${VERSION}-${{ matrix.name }}.dmg"
+
+      # ------------------------------------------------------------ Debugging
+      # Disabled for now. To get compiler errors as annotations that can be read through
+      # the GitHub API (full logs are not reachable from the sandbox), make the build
+      # steps above write their output to a file, for example
+      #     make -j"$(nproc)" 2>&1 | tee build.log
+      # (add `set -o pipefail` before it), then enable this step.
+      # - name: Annotate build errors
+      #   if: failure()
+      #   run: grep -E "error:|Error " build/build.log | head -20 | while read -r line; do echo "::error::$line"; done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          draft: true
+          generate_release_notes: true
+          body: |
+            Unofficial builds of Cubiomes Viewer (SunnySlopes fork at 169e8c5, xpple/cubiomes at 4f04235) with the patches from this repository applied. The attached source archive is the exact patched source these binaries were built from.
+
+            The Windows and macOS builds have not been tested on real machines yet.
