@@ -5,6 +5,8 @@ Newest changes go under "Unreleased" until a version is tagged.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-22
+
 ### Added
 - Search timer: the status line under the progress bar shows how long the search has been running. It stops with the search, continues when you continue, starts from zero again when you clear the results while no search is running, and is saved in the session.
 
