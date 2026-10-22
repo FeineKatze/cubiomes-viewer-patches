@@ -18,7 +18,7 @@ else
 fi
 
 # 2. viewer patches (order matters). --ignore-whitespace tolerates CRLF checkouts.
-for p in panning-fix structure-distance fast-spawn-toggle simd-toggle radial-biome-viewer qt6-combo-fix edge-cells-viewer condition-shapes; do
+for p in panning-fix structure-distance fast-spawn-toggle simd-toggle radial-biome-viewer qt6-combo-fix edge-cells-viewer condition-shapes search-timer; do
     git apply --ignore-whitespace --whitespace=nowarn "$PATCHES/$p.patch"
     echo "applied $p"
 done

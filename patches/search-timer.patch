@@ -1,0 +1,180 @@
+--- a/src/config.h
++++ b/src/config.h
+@@ -241,6 +241,7 @@
+     bool stoponres;
+     uint64_t smin;
+     uint64_t smax;
++    uint64_t elapsed; // seconds the search has been running in total (saved with the #Time line)
+ 
+     SearchConfig() { reset(); }
+ 
+--- a/src/config.cpp
++++ b/src/config.cpp
+@@ -548,6 +548,7 @@
+     stoponres = true;
+     smin = 0;
+     smax = ~(uint64_t)0;
++    elapsed = 0;
+ }
+ 
+ bool SearchConfig::read(const QString& line)
+--- a/src/searchthread.cpp
++++ b/src/searchthread.cpp
+@@ -20,7 +20,11 @@
+ void Session::writeHeader(QTextStream& stream)
+ {
+     stream << "#Version:  " << VERS_MAJOR << "." << VERS_MINOR << "." << VERS_PATCH << "\n";
+-    stream << "#Time:     " << QDateTime::currentDateTime().toString() << "\n";
++    // the elapsed search time is kept in this line, because older versions skip it
++    stream << "#Time:     " << QDateTime::currentDateTime().toString();
++    if (sc.elapsed)
++        stream << " [elapsed " << sc.elapsed << "s]";
++    stream << "\n";
+     // MC version of the session should take priority over the one in the settings
+     wi.write(stream);
+ 
+@@ -76,7 +80,14 @@
+         line = stream.readLine();
+ 
+         if (line.isEmpty()) continue;
+-        if (line.startsWith("#Time:")) continue;
++        if (line.startsWith("#Time:"))
++        {
++            unsigned long long el = 0;
++            int i = line.indexOf("[elapsed ");
++            if (i >= 0 && sscanf(line.mid(i).toLocal8Bit().data(), "[elapsed %llus]", &el) == 1)
++                sc.elapsed = el;
++            continue;
++        }
+         if (line.startsWith("#Title:")) continue;
+         if (line.startsWith("#Desc:")) continue;
+         if (sc.read(line)) continue;
+--- a/src/formsearchcontrol.h
++++ b/src/formsearchcontrol.h
+@@ -161,6 +161,13 @@
+     SearchMaster sthread;
+     QElapsedTimer elapsed;
+     QTimer stimer;
++
++    // time the search has been running: finished runs plus the current one
++    qint64 runMs;
++    QElapsedTimer runTimer;
++    qint64 runTimeMs() const;
++    QString runTimeText() const;
++    void updateIdleStatus();
+     QFile resultfile;
+ 
+     // the seed list option is not stored in a widget but is loaded with the "..." button
+--- a/src/formsearchcontrol.cpp
++++ b/src/formsearchcontrol.cpp
+@@ -107,6 +107,8 @@
+     , sthread(this)
+     , elapsed()
+     , stimer()
++    , runMs()
++    , runTimer()
+     , resultfile()
+     , slist64path()
+     , slist64fnam()
+@@ -150,6 +152,7 @@
+     ui->spinThreads->setValue(QThread::idealThreadCount());
+ 
+     searchLockUi(false);
++    updateIdleStatus();
+ }
+ 
+ FormSearchControl::~FormSearchControl()
+@@ -192,6 +195,7 @@
+     s.stoponres = ui->checkStop->isChecked();
+     s.smin = smin;
+     s.smax = smax;
++    s.elapsed = runTimeMs() / 1000;
+     return s;
+ }
+ 
+@@ -222,9 +226,35 @@
+ 
+     ui->lineStart->setText(QString::asprintf("%" PRId64, (int64_t)s.startseed));
+ 
++    runMs = (qint64)s.elapsed * 1000;
++    runTimer.invalidate();
++    updateIdleStatus();
++
+     return ok;
+ }
+ 
++qint64 FormSearchControl::runTimeMs() const
++{
++    return runMs + (runTimer.isValid() ? runTimer.elapsed() : 0);
++}
++
++QString FormSearchControl::runTimeText() const
++{
++    qint64 s = runTimeMs() / 1000;
++    qint64 d = s / 86400;
++    qint64 h = s % 86400 / 3600;
++    qint64 m = s % 3600 / 60;
++    if (d)
++        return QString::asprintf("%lldd %02lld:%02lld:%02lld", (long long)d, (long long)h, (long long)m, (long long)(s % 60));
++    return QString::asprintf("%lld:%02lld:%02lld", (long long)h, (long long)m, (long long)(s % 60));
++}
++
++void FormSearchControl::updateIdleStatus()
++{
++    // same position as the clock of a running search, so the text does not jump
++    ui->labelStatus->setText(runTimeText() + "  |  " + tr("Idle", "Progressbar"));
++}
++
+ void FormSearchControl::stopSearch()
+ {
+     sthread.stopSearch();
+@@ -352,6 +382,11 @@
+     model->reset();
+     searchProgressReset();
+     ui->lineStart->setText("0");
++    if (!runTimer.isValid())
++    {   // the clock starts from zero again with the cleared results
++        runMs = 0;
++        updateIdleStatus();
++    }
+ }
+ 
+ void FormSearchControl::on_buttonStart_clicked()
+@@ -405,6 +440,7 @@
+             updt = 20;
+             sthread.startSearch();
+             elapsed.start();
++            runTimer.start();
+             stimer.start(250);
+         }
+         else
+@@ -773,6 +809,11 @@
+ 
+ void FormSearchControl::searchFinish(bool done)
+ {
++    if (runTimer.isValid())
++    {
++        runMs += runTimer.elapsed();
++        runTimer.invalidate();
++    }
+     stimer.stop();
+     onBufferTimeout();
+     progressTimeout();
+@@ -782,7 +823,7 @@
+         ui->progressBar->setValue(10000);
+         ui->progressBar->setFormat(tr("Done", "Progressbar"));
+     }
+-    ui->labelStatus->setText(tr("Idle", "Progressbar"));
++    updateIdleStatus();
+     searchLockUi(false);
+ 
+     if (parent)
+@@ -799,7 +840,7 @@
+ 
+     updateSearchProgress(prog, end, seed);
+ 
+-    ui->labelStatus->setText(status);
++    ui->labelStatus->setText(runTimeText() + "  |  " + status);
+ 
+     update();
+ }
