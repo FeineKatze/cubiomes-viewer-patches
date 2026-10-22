@@ -236,6 +236,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v6
+
       - uses: actions/download-artifact@v8
         with:
           pattern: dist-*
@@ -246,12 +248,27 @@ jobs:
         working-directory: dist
         run: sha256sum -- * > SHA256SUMS.txt
 
+      # The release page shows the section of this version from CHANGELOG.md.
+      - name: Release notes from the changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! ./scripts/release-notes.sh "$version" > changes.md; then
+            echo "::error::CHANGELOG.md has no section [$version]. Rename [Unreleased] to [$version] before tagging."
+            exit 1
+          fi
+          {
+            echo "## What's new in ${version}"
+            cat changes.md
+            echo
+            echo "---"
+            echo "Unofficial builds of Cubiomes Viewer (SunnySlopes fork at 169e8c5, xpple/cubiomes at 4f04235) with the patches from this repository applied. The attached source archive is the exact patched source these binaries were built from."
+            echo
+            echo "The Windows and macOS builds have not been tested on real machines yet."
+          } > release-notes.md
+
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           draft: true
           generate_release_notes: true
-          body: |
-            Unofficial builds of Cubiomes Viewer (SunnySlopes fork at 169e8c5, xpple/cubiomes at 4f04235) with the patches from this repository applied. The attached source archive is the exact patched source these binaries were built from.
-
-            The Windows and macOS builds have not been tested on real machines yet.
+          body_path: release-notes.md

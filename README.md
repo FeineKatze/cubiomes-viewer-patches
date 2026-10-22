@@ -61,6 +61,14 @@ Do not add `-march=native` to a build you want to share. The AVX2 code does not 
 
 Linux builds need Qt 6 installed on your system. The Windows and macOS builds have not been tested on real machines yet.
 
+## Changelog and releases
+
+[`CHANGELOG.md`](CHANGELOG.md) lists the changes of every version, and a release page shows the section of its version.
+
+- Every change that users can see gets a line under `## [Unreleased]`, in the same commit.
+- To release: rename `## [Unreleased]` to `## [x.y.z] - date`, add a fresh empty `## [Unreleased]` above it, commit, then tag `vx.y.z` and push the tag.
+- The release job fails with a clear message if the tag has no section in the changelog, so a release can't go out without notes. `scripts/release-notes.sh x.y.z` prints the section as it will appear.
+
 ## Patch order
 
 `apply.sh` applies these in this order. The viewer patches go on the viewer repository, and the backend patches go on the `cubiomes/` submodule.
