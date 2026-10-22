@@ -1,0 +1,244 @@
+--- a/cubiomes/finders.c
++++ b/cubiomes/finders.c
+@@ -1375,12 +1375,7 @@
+     const int xs[4], const int zs[4], int n)
+ {
+     const BiomeNoise *bn = &g->bn;
+-    const int64_t np0[6] = { 0, 0, 0, 0, 0, -5000 };
+-    int active = 0, l;
+-    for (l = 0; l < n; l++)
+-        active |= fitnessFromNp(g, xs[l], zs[l], np0) < *fitness;
+-    if (!active)
+-        return;
++    int l;
+ 
+     double px[4], pz[4], xd[4], zd[4], zero[4] = {0, 0, 0, 0}, s1[4], s2[4], v[4];
+     float c[4], w[4];
+@@ -1425,6 +1420,77 @@
+     }
+ }
+ 
++#if defined(__GNUC__)
++// The candidate offsets of the two rings do not depend on the seed: compute them
++// once per thread, with the same expressions as before.
++#define RING_MAX 1100
++typedef struct { int state, n; int dx[RING_MAX], dz[RING_MAX]; } RingTable;
++static __thread RingTable ring_tbl[2];
++static const RingTable *getRing(double maxrad, double step)
++{
++    int k = (maxrad == 2048.0 && step == 512.0) ? 0 : (maxrad == 512.0 && step == 32.0) ? 1 : -1;
++    if (k < 0)
++        return NULL;
++    RingTable *t = &ring_tbl[k];
++    if (t->state == 0)
++    {
++        int n = 0;
++        double rad, ang;
++        for (rad = step; rad <= maxrad; rad += step)
++        {
++            for (ang = 0; ang <= PI*2; ang += step/rad)
++            {
++                if (n >= RING_MAX) { t->state = -1; return NULL; }
++                t->dx[n] = (int)(sin(ang) * rad);
++                t->dz[n] = (int)(cos(ang) * rad);
++                n++;
++            }
++        }
++        t->n = n;
++        t->state = 1;
++    }
++    return t->state > 0 ? t : NULL;
++}
++#endif
++
++static inline
++void ringCandidate(const Generator *g, Pos *pos, uint64_t *fitness, int x, int z,
++    int batch, int bx[4], int bz[4], int *bn)
++{
++    if (batch)
++    {
++        // skip candidates that cannot win, so the vector lanes only hold useful ones.
++        // The best fitness only gets lower, so a candidate that cannot beat it now
++        // cannot beat it later either.
++        uint64_t lb;
++        if (g->mc > MC_1_21_1)
++            lb = (uint64_t)((int64_t)x*x + (int64_t)z*z);
++        else
++        {
++            const int64_t np0[6] = { 0, 0, 0, 0, 0, -5000 };
++            lb = fitnessFromNp(g, x, z, np0);
++        }
++        if (lb >= *fitness)
++            return;
++        bx[*bn] = x; bz[*bn] = z;
++        if (++*bn == 4)
++        {
++            fittestBatch(g, pos, fitness, bx, bz, *bn);
++            *bn = 0;
++        }
++        return;
++    }
++    uint64_t fit = g_fastSpawn ? calcFitnessBelow(g, x, z, *fitness)
++                               : calcFitness(g, x, z);
++    // Then update pos and fitness if combined total is lower/better
++    if (fit < *fitness)
++    {
++        pos->x = x;
++        pos->z = z;
++        *fitness = fit;
++    }
++}
++
+ static
+ void findFittest(const Generator *g, Pos *pos, uint64_t *fitness, double maxrad, double step)
+ {
+@@ -1432,30 +1498,23 @@
+     Pos p = *pos;
+     int batch = g_fastSpawn && useNoiseSimd();
+     int bx[4], bz[4], bn = 0;
+-    for (rad = step; rad <= maxrad; rad += step)
++#if defined(__GNUC__)
++    const RingTable *rt = g_fastSpawn ? getRing(maxrad, step) : NULL;
++    if (rt)
++    {
++        for (int i = 0; i < rt->n; i++)
++            ringCandidate(g, pos, fitness, p.x + rt->dx[i], p.z + rt->dz[i], batch, bx, bz, &bn);
++    }
++    else
++#endif
+     {
+-        for (ang = 0; ang <= PI*2; ang += step/rad)
++        for (rad = step; rad <= maxrad; rad += step)
+         {
+-            int x = p.x + (int)(sin(ang) * rad);
+-            int z = p.z + (int)(cos(ang) * rad);
+-            if (batch)
++            for (ang = 0; ang <= PI*2; ang += step/rad)
+             {
+-                bx[bn] = x; bz[bn] = z;
+-                if (++bn == 4)
+-                {
+-                    fittestBatch(g, pos, fitness, bx, bz, bn);
+-                    bn = 0;
+-                }
+-                continue;
+-            }
+-            uint64_t fit = g_fastSpawn ? calcFitnessBelow(g, x, z, *fitness)
+-                                       : calcFitness(g, x, z);
+-            // Then update pos and fitness if combined total is lower/better
+-            if (fit < *fitness)
+-            {
+-                pos->x = x;
+-                pos->z = z;
+-                *fitness = fit;
++                int x = p.x + (int)(sin(ang) * rad);
++                int z = p.z + (int)(cos(ang) * rad);
++                ringCandidate(g, pos, fitness, x, z, batch, bx, bz, &bn);
+             }
+         }
+     }
+@@ -1529,7 +1588,14 @@
+         return spawn;
+ 
+     SurfaceNoise sn;
+-    initSurfaceNoise(&sn, DIM_OVERWORLD, g->seed);
++    // from 1.18 on the spawn height comes from the climate noise and the surface
++    // noise is not used, so it is only set up when needed
++    const SurfaceNoise *snp = NULL;
++    if (g->mc <= MC_1_17 || !g_fastSpawn)
++    {
++        initSurfaceNoise(&sn, DIM_OVERWORLD, g->seed);
++        snp = &sn;
++    }
+ 
+     if (g->mc <= MC_1_12)
+     {
+@@ -1537,7 +1603,7 @@
+         {
+             float y;
+             int id, grass = 0;
+-            mapApproxHeight(&y, &id, g, &sn, spawn.x >> 2, spawn.z >> 2, 1, 1);
++            mapApproxHeight(&y, &id, g, snp, spawn.x >> 2, spawn.z >> 2, 1, 1);
+             getBiomeDepthAndScale(id, 0, 0, &grass);
+             if (grass > 0 && y >= grass)
+                 break;
+@@ -1558,7 +1624,7 @@
+                 int ids[16];
+                 cx0 = (spawn.x & ~15) + j * 16; // start of chunk
+                 cz0 = (spawn.z & ~15) + k * 16;
+-                mapApproxHeight(y, ids, g, &sn, cx0 >> 2, cz0 >> 2, 4, 4);
++                mapApproxHeight(y, ids, g, snp, cx0 >> 2, cz0 >> 2, 4, 4);
+                 for (ii = 0; ii < 4; ii++)
+                 {
+                     for (jj = 0; jj < 4; jj++)
+@@ -1599,13 +1665,44 @@
+                 cz0 = (spawn.z & ~15) + k * 16;
+                 for (ii = 0; ii < 4; ii++)
+                 {
++                    if (g_fastSpawn && g->bn.nptype == -1 && useNoiseSimd())
++                    {   // the four points of this column are evaluated together;
++                        // the first one that qualifies is used, as before
++                        int xs[4], ys[4] = {0, 0, 0, 0}, zs[4];
++                        int64_t np[4][6];
++                        for (jj = 0; jj < 4; jj++)
++                        {   // ii and jj are unsigned: convert to int before shifting
++                            int bx = cx0 + ii * 4;
++                            int bz = cz0 + jj * 4;
++                            xs[jj] = bx >> 2;
++                            zs[jj] = bz >> 2;
++                        }
++                        sampleBiomeNoiseNP4(&g->bn, np, xs, ys, zs, 0);
++                        for (jj = 0; jj < 4; jj++)
++                        {
++                            float y = np[jj][NP_DEPTH] / 76.0;
++                            int ok = y > 63;
++                            if (!ok)
++                            {
++                                int id = climateToBiome(g->mc, (const uint64_t*)np[jj], NULL);
++                                ok = id == frozen_ocean || id == deep_frozen_ocean || id == frozen_river;
++                            }
++                            if (ok)
++                            {
++                                spawn.x = cx0 + ii * 4;
++                                spawn.z = cz0 + jj * 4;
++                                return spawn;
++                            }
++                        }
++                        continue;
++                    }
+                     for (jj = 0; jj < 4; jj++)
+                     {
+                         float y;
+                         int id;
+                         int x = cx0 + ii * 4;
+                         int z = cz0 + jj * 4;
+-                        mapApproxHeight(&y, &id, g, &sn, x >> 2, z >> 2, 1, 1);
++                        mapApproxHeight(&y, &id, g, snp, x >> 2, z >> 2, 1, 1);
+                         if (y > 63 || id == frozen_ocean ||
+                             id == deep_frozen_ocean || id == frozen_river)
+                         {
+--- a/cubiomes/biomenoise.c
++++ b/cubiomes/biomenoise.c
+@@ -1211,7 +1211,7 @@
+ 
+ // Note: Climate noise is sampled at a 1:1 scale.
+ // climate parameters of four positions, bit-identical to sampleBiomeNoise()
+-static void sampleBiomeNoiseNP4(const BiomeNoise *bn, int64_t np[4][6],
++void sampleBiomeNoiseNP4(const BiomeNoise *bn, int64_t np[4][6],
+     const int x[4], const int y[4], const int z[4], uint32_t sample_flags)
+ {
+     double px[4], pz[4], zero[4] = {0, 0, 0, 0}, xd[4], zd[4], v[4];
+--- a/cubiomes/biomenoise.h
++++ b/cubiomes/biomenoise.h
+@@ -277,6 +277,11 @@
+ int sampleBiomeNoise(const BiomeNoise *bn, int64_t *np, int x, int y, int z,
+     uint64_t *dat, uint32_t sample_flags);
+ void sampleNoiseParameters(BiomeNoise *bn, int x, int z, float np_param[4]);
++/* Climate parameters of four positions, identical to four calls of
++ * sampleBiomeNoise() with the given flags and without the biome lookup. */
++void sampleBiomeNoiseNP4(const BiomeNoise *bn, int64_t np[4][6],
++    const int x[4], const int y[4], const int z[4], uint32_t sample_flags);
++
+ /* Same as n consecutive calls (n <= 4) of
+  *   ids[l] = sampleBiomeNoise(bn, NULL, x[l], y[l], z[l], dat, flags);
+  * in lane order, with identical results, but evaluates the noise for all

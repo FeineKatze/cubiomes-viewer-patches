@@ -8,7 +8,7 @@ Tested base: viewer commit `169e8c5` ("fixed camp search condition wipes out all
 
 | Change | Details |
 |---|---|
-| Faster spawn search | The exact spawn lookup skips noise samples that cannot beat the best candidate so far. About 9× faster for searches with a Spawn condition. Identical results. |
+| Faster spawn search | The exact spawn lookup skips noise samples that cannot beat the best candidate so far. About 9× faster for searches with a Spawn condition. A second round (ring offsets computed once per thread, the unused terrain setup skipped from 1.18 on, only useful candidates sent to the vector code, and the final spawn stage vectorised) makes a spawn plus village search about another 1.7× faster (58K to 100K seeds/s on 12 threads of a Ryzen 7 5800X). Identical results, and everything stays tied to the same off switch. |
 | SIMD biome noise (AVX2) | Evaluates the biome noise for 4 points at once. Used for area generation (the map), strongholds, monument checks and spawn. Roughly 1.7–2.2× faster area generation, 1.5× strongholds, about 1.4× more on spawn searches. Identical results; runtime CPU detection with a normal fallback. |
 | Radial area for exact biome conditions | "Overworld/Nether/End at scale" accept "Within radial distance" (a circle) as well as squares. Not available for the layer-based overworld of Minecraft 1.0–1.17. |
 | Include cells touching the edge | Option for the radial area. A cell counts if any block of it is inside the circle, not only its corner. On by default for new conditions; saved conditions keep the old rule. |
@@ -66,7 +66,7 @@ Linux builds need Qt 6 installed on your system. The Windows and macOS builds ha
 `apply.sh` applies these in this order. The viewer patches go on the viewer repository, and the backend patches go on the `cubiomes/` submodule.
 
 Viewer: `panning-fix`, `structure-distance`, `fast-spawn-toggle`, `simd-toggle`, `radial-biome-viewer`, `qt6-combo-fix`, `edge-cells-viewer`, `condition-shapes`, `search-timer`.
-Backend: `spawn-speedup`, `simd-noise`, `radial-biome-backend`, `edge-cells-backend`.
+Backend: `spawn-speedup`, `simd-noise`, `radial-biome-backend`, `edge-cells-backend`, `spawn-speedup-2`.
 
 ## How these were checked
 

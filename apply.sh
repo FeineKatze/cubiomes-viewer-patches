@@ -24,7 +24,7 @@ for p in panning-fix structure-distance fast-spawn-toggle simd-toggle radial-bio
 done
 
 # 3. backend patches (paths inside the patches start with cubiomes/, so strip two levels)
-(cd cubiomes && for p in spawn-speedup simd-noise radial-biome-backend edge-cells-backend; do
+(cd cubiomes && for p in spawn-speedup simd-noise radial-biome-backend edge-cells-backend spawn-speedup-2; do
     git apply --ignore-whitespace --whitespace=nowarn -p2 "$PATCHES/$p.patch"
     echo "applied $p (backend)"
 done)
